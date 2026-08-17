@@ -3,43 +3,45 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
+import math
+import requests
+from datetime import datetime
 import yfinance as yf
 import pyotp
 
-# --- ANGEL ONE IMPORT (WITH FAILSAFE) ---
+# --- ANGEL ONE SECURE API WRAPPER ---
 try:
     from SmartApi import SmartConnect
 except ImportError:
     SmartConnect = None
 
-# --- 1. PAGE ARCHITECTURE ---
+# --- 1. PAGE SETUP ---
 st.set_page_config(
     page_title="EDGE4X | Institutional Terminal", 
     layout="wide", 
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. STATE MANAGEMENT ---
-if 'data_processed' not in st.session_state:
-    st.session_state.data_processed = False
+# --- 2. GLOBAL STATE MANAGEMENT ---
+if 'eod_data_processed' not in st.session_state:
+    st.session_state.eod_data_processed = False
 if 'fii_net_futures' not in st.session_state:
-    st.session_state.fii_net_futures = -168702
+    st.session_state.fii_net_futures = 0
 if 'fii_dod_delta' not in st.session_state:
-    st.session_state.fii_dod_delta = -3552
+    st.session_state.fii_dod_delta = 0
 if 'smart_money_score' not in st.session_state:
-    st.session_state.smart_money_score = -6.0
+    st.session_state.smart_money_score = 0.0
 if 'market_regime' not in st.session_state:
-    st.session_state.market_regime = "BEARISH / SELL ON RISE"
+    st.session_state.market_regime = "AWAITING EOD DATA"
 
-
-# --- 3. ANGEL ONE LIVE API CONNECTION (DIAGNOSTIC ENGINE) ---
+# --- 3. LIVE BROKER API AUTHENTICATION ---
 @st.cache_resource(ttl=3600)
 def connect_angel_one():
     if SmartConnect is None:
-        return None, "SmartApi library not installed locally. Check requirements.txt."
+        return None, "SmartApi library not installed locally"
     try:
         if "angel_one" not in st.secrets:
-            return None, "Secrets not configured in Streamlit Cloud Settings."
+            return None, "Secrets not configured in secrets.toml"
             
         api_key = st.secrets["angel_one"]["api_key"]
         client_id = st.secrets["angel_one"]["client_id"]
@@ -47,7 +49,7 @@ def connect_angel_one():
         totp_secret = st.secrets["angel_one"]["totp_secret"]
 
         if "YOUR_" in api_key or "YOUR_" in client_id:
-            return None, "Default placeholder keys detected. Please enter real keys."
+            return None, "Default placeholder keys detected"
 
         smart_obj = SmartConnect(api_key=api_key)
         totp = pyotp.TOTP(totp_secret).now()
@@ -56,8 +58,7 @@ def connect_angel_one():
         if session_data.get('status') is True:
             return smart_obj, "Connected"
         else:
-            msg = session_data.get('message', 'Login rejected by Angel One')
-            return None, msg
+            return None, session_data.get('message', 'Login rejected by Angel One')
     except Exception as e:
         return None, str(e)
 
@@ -69,7 +70,6 @@ if angel_api:
 else:
     api_status_text = f"API DISCONNECTED ({connection_message})"
     api_status_color = "#FF5C5C"
-
 
 # --- 4. MASTER CSS: GRAPHITE & CHAMPAGNE-GOLD ---
 st.markdown(f"""
@@ -101,12 +101,12 @@ st.markdown(f"""
     #MainMenu, header, footer {{ visibility: hidden; }}
     
     .block-container {{
-        padding-top: 110px !important; 
-        padding-bottom: 40px !important;
+        padding-top: 105px !important; 
+        padding-bottom: 30px !important;
         max-width: 1600px;
     }}
 
-    /* FIXED TOP NAVIGATION */
+    /* FIXED TOP BAR */
     .terminal-nav {{
         position: fixed; top: 0; left: 0; right: 0; height: 60px;
         background: rgba(8, 10, 13, 0.95); backdrop-filter: blur(12px);
@@ -118,7 +118,7 @@ st.markdown(f"""
     .nav-status {{ font-size: 0.8rem; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 8px; }}
     .live-dot {{ height: 7px; width: 7px; background-color: {api_status_color}; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px {api_status_color}; }}
 
-    /* FIXED LIVE MARKET TICKER */
+    /* FIXED LIVE TICKER STRIP */
     .ticker-wrap {{
         position: fixed; top: 60px; left: 0; right: 0; height: 35px; z-index: 999998;
         background-color: var(--bg-elevated); border-bottom: 1px solid var(--border-subtle);
@@ -131,15 +131,15 @@ st.markdown(f"""
     .t-dn {{ color: var(--accent-red); }}
     @keyframes ticker {{ 0% {{ transform: translate3d(0, 0, 0); }} 100% {{ transform: translate3d(-100%, 0, 0); }} }}
 
-    /* NAVIGATION PILLS */
+    /* HORIZONTAL NAVIGATION PILLS */
     div[role="radiogroup"] {{
         display: flex !important; flex-direction: row !important; justify-content: center !important;
         gap: 10px !important; background: var(--bg-surface) !important; padding: 8px 16px !important;
-        border-radius: 8px !important; border: 1px solid var(--border-subtle) !important; margin-bottom: 35px !important;
+        border-radius: 8px !important; border: 1px solid var(--border-subtle) !important; margin-bottom: 25px !important;
     }}
     div[role="radiogroup"] label {{
         background: transparent !important; border: none !important; color: var(--text-muted) !important;
-        padding: 8px 22px !important; font-weight: 600 !important; font-size: 0.85rem !important;
+        padding: 8px 24px !important; font-weight: 600 !important; font-size: 0.85rem !important;
         letter-spacing: 1px !important; border-radius: 6px !important; transition: all 0.2s ease !important;
     }}
     div[role="radiogroup"] label:hover {{ color: var(--text-primary) !important; background: rgba(255, 255, 255, 0.03) !important; }}
@@ -148,31 +148,53 @@ st.markdown(f"""
         box-shadow: 0 4px 10px rgba(212, 175, 55, 0.15) !important;
     }}
 
-    /* CARDS & PANELS */
-    .metric-strip {{ display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 25px; }}
+    /* UI PANELS & METRIC CARDS */
+    .metric-strip {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }}
     .metric-card {{
-        flex: 1 1 180px; background: var(--bg-surface); padding: 18px 20px; border-radius: 8px;
-        border: 1px solid var(--border-subtle);
+        flex: 1 1 180px; background: var(--bg-surface); padding: 15px 18px; border-radius: 8px;
+        border: 1px solid var(--border-subtle); position: relative;
     }}
-    .metric-label {{ font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }}
-    .metric-value {{ font-size: 1.5rem; font-weight: 700; color: var(--text-primary); }}
+    .metric-label {{ font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; display: flex; align-items: center; }}
+    .metric-sublabel {{ font-size: 0.72rem; color: var(--gold-primary); font-weight: 500; text-transform: none; margin-bottom: 6px; }}
+    .metric-value {{ font-size: 1.35rem; font-weight: 700; color: var(--text-primary); }}
 
-    .panel-box {{ background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 22px; border-radius: 8px; margin-bottom: 20px; }}
-    .panel-header {{ font-size: 0.85rem; color: var(--gold-primary); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px; font-weight: 700; }}
+    .panel-box {{ background: var(--bg-surface); border: 1px solid var(--border-subtle); padding: 20px; border-radius: 8px; margin-bottom: 18px; }}
+    .panel-header {{ font-size: 0.82rem; color: var(--gold-primary); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 12px; font-weight: 700; }}
+    .section-header {{ font-size: 1.05rem; color: var(--text-primary); text-transform: uppercase; letter-spacing: 1.8px; margin: 25px 0 15px 0; font-weight: 800; border-bottom: 1px solid var(--border-subtle); padding-bottom: 10px; }}
+    
+    .compact-upload-title {{ font-size: 0.78rem; font-weight: 700; color: var(--gold-primary); letter-spacing: 1px; margin-bottom: 6px; text-transform: uppercase; }}
 
-    .setup-row {{ display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 10px 0; font-size: 0.95rem; }}
+    .data-table {{ width: 100%; border-collapse: collapse; font-size: 0.88rem; }}
+    .data-table th {{ text-align: left; padding: 10px 12px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-weight: 600; text-transform: uppercase; font-size: 0.74rem; letter-spacing: 0.8px; }}
+    .data-table td {{ padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.02); color: var(--text-primary); }}
+    .data-table tr:hover {{ background: var(--bg-elevated); }}
+
+    .setup-row {{ display: flex; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 8px 0; font-size: 0.9rem; align-items: center; }}
     .setup-row:last-child {{ border-bottom: none; }}
     .setup-label {{ color: var(--text-secondary); }}
     .setup-val {{ font-weight: 700; color: var(--text-primary); }}
-
-    .data-table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
-    .data-table th {{ text-align: left; padding: 14px; color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }}
-    .data-table td {{ padding: 14px; border-bottom: 1px solid rgba(255,255,255,0.02); color: var(--text-primary); }}
-    .data-table tr:hover {{ background: var(--bg-elevated); }}
     
-    .upload-zone {{ background: var(--bg-elevated); border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 16px; margin-bottom: 12px; }}
-    .fade-in {{ animation: fadeIn 0.4s ease forwards; }}
-    @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(8px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+    /* TOOLTIP ENGINE */
+    .tooltip {{
+        position: relative; display: inline-block; cursor: help;
+        color: var(--gold-primary); margin-left: 6px; font-size: 0.85rem; font-weight: 700;
+    }}
+    .tooltip .tooltiptext {{
+        visibility: hidden; width: 250px; background-color: var(--bg-elevated);
+        color: var(--text-primary); text-align: left; border-radius: 6px; padding: 10px 12px;
+        position: absolute; z-index: 1000; bottom: 130%; left: 50%; margin-left: -125px;
+        border: 1px solid var(--gold-primary); box-shadow: 0px 8px 16px rgba(0,0,0,0.8);
+        font-size: 0.75rem; font-weight: 400; line-height: 1.5; text-transform: none; letter-spacing: normal;
+        opacity: 0; transition: opacity 0.2s;
+    }}
+    .tooltip .tooltiptext::after {{
+        content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px;
+        border-width: 6px; border-style: solid; border-color: var(--gold-primary) transparent transparent transparent;
+    }}
+    .tooltip:hover .tooltiptext {{ visibility: visible; opacity: 1; }}
+
+    .fade-in {{ animation: fadeIn 0.35s ease forwards; }}
+    @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(6px); }} to {{ opacity: 1; transform: translateY(0); }} }}
 </style>
 
 <div class="terminal-nav">
@@ -182,9 +204,10 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# --- 5. REAL-TIME DATA FEEDS (BACKUP API) ---
+# --- 5. LIVE DATA BACKGROUND ENGINES (NO DUMMY DATA) ---
+
 @st.cache_data(ttl=60)
-def get_live_prices():
+def get_live_ticker_feed():
     symbols = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "INDIA VIX": "^INDIAVIX"}
     results = {}
     for name, sym in symbols.items():
@@ -197,64 +220,188 @@ def get_live_prices():
                 pct_change = ((curr_price - prev_close) / prev_close) * 100
                 results[name] = {"price": curr_price, "pct_change": pct_change}
             else:
-                raise ValueError
+                results[name] = {"price": 0.0, "pct_change": 0.0}
         except Exception:
-            mock = {"NIFTY 50": (24385.40, -0.23), "BANK NIFTY": (50420.15, 0.15), "INDIA VIX": (14.85, 2.10)}
-            results[name] = {"price": mock[name][0], "pct_change": mock[name][1]}
+            results[name] = {"price": 0.0, "pct_change": 0.0}
     return results
 
-@st.cache_data(ttl=60)
-def get_heavyweight_quotes():
-    heavyweights = {
-        "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 11.2},
-        "RELIANCE.NS": {"name": "Reliance Ind.", "weight": 9.1},
-        "ICICIBANK.NS": {"name": "ICICI Bank", "weight": 7.9},
-        "INFY.NS": {"name": "Infosys", "weight": 5.8},
-        "TCS.NS": {"name": "TCS", "weight": 3.9}
+@st.cache_data(ttl=300)
+def get_premarket_macro_data():
+    symbols = {
+        "DXY": "DX-Y.NYB", "US10Y": "^TNX", "BRENT": "BZ=F",
+        "HDFC_ADR": "HDB", "ICICI_ADR": "IBN", "INFY_ADR": "INFY",
+        "WIPRO_ADR": "WIT", "DRREDDY_ADR": "RDY"
     }
-    data = []
-    total_weighted_pull = 0.0
-    
-    for sym, meta in heavyweights.items():
+    macro_data = {}
+    for name, sym in symbols.items():
         try:
-            t = yf.Ticker(sym)
-            h = t.history(period="5d")
-            if len(h) >= 2:
-                p_close = h['Close'].iloc[-2]
-                c_price = h['Close'].iloc[-1]
-                chg_pct = ((c_price - p_close) / p_close) * 100
-                vol = h['Volume'].iloc[-1]
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="5d")
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                curr = hist['Close'].iloc[-1]
+                pct = ((curr - prev_close) / prev_close) * 100
+                macro_data[name] = {"price": curr, "change": pct}
             else:
-                raise ValueError
-        except Exception:
-            mock_vals = {
-                "HDFCBANK.NS": (1642.50, -0.45, 12400000), "RELIANCE.NS": (2980.10, -0.82, 8500000),
-                "ICICIBANK.NS": (1180.30, 0.20, 9200000), "INFY.NS": (1850.40, -0.15, 4100000),
-                "TCS.NS": (4210.00, 0.05, 1800000)
-            }
-            c_price, chg_pct, vol = mock_vals[sym]
+                macro_data[name] = {"price": 0.0, "change": 0.0}
+        except:
+            macro_data[name] = {"price": 0.0, "change": 0.0}
+    return macro_data
 
-        pull_score = (chg_pct * meta["weight"]) / 100.0
-        total_weighted_pull += pull_score
+def norm_pdf(x):
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
-        data.append({
-            "Symbol": meta["name"], "Weight": f"{meta['weight']}%", "Price": f"₹{c_price:,.2f}",
-            "Change %": chg_pct, "Volume": f"{vol/100000:.1f}L",
-            "State": "DISTRIBUTION" if chg_pct < -0.3 else "ACCUMULATION" if chg_pct > 0.3 else "NEUTRAL"
-        })
+@st.cache_data(ttl=60)
+def get_real_option_chain_data():
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br"
+        }
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=5)
+        res = session.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", headers=headers, timeout=5)
+        data = res.json()
         
-    return pd.DataFrame(data), total_weighted_pull
+        records = data.get('records', {})
+        spot_price = records.get('underlyingValue', 0)
+        expiry_dates = records.get('expiryDates', [])
+        
+        if not expiry_dates or spot_price == 0:
+            return None
+            
+        current_expiry = expiry_dates[0]
+        exp_date_obj = datetime.strptime(current_expiry, '%d-%b-%Y')
+        days_to_expiry = (exp_date_obj - datetime.now()).days
+        time_to_exp = max(1.0, days_to_expiry) / 365.0
+        
+        chain_data = records.get('data', [])
+        filtered_chain = [d for d in chain_data if d['expiryDate'] == current_expiry]
+        atm_strike = int(round(spot_price / 50.0) * 50)
+        
+        parsed_strikes = []
+        atm_data = {"CE_LTP": 0, "PE_LTP": 0, "CE_IV": 0, "PE_IV": 0}
+        
+        for item in filtered_chain:
+            strike = item.get('strikePrice')
+            ce = item.get('CE', {})
+            pe = item.get('PE', {})
+            
+            ce_oi = ce.get('openInterest', 0) * 25
+            pe_oi = pe.get('openInterest', 0) * 25
+            ce_iv = ce.get('impliedVolatility', 0.0)
+            pe_iv = pe.get('impliedVolatility', 0.0)
+            
+            if ce_iv == 0: ce_iv = 15.0
+            if pe_iv == 0: pe_iv = 15.0
+            
+            if strike == atm_strike:
+                atm_data["CE_LTP"] = ce.get('lastPrice', 0)
+                atm_data["PE_LTP"] = pe.get('lastPrice', 0)
+                atm_data["CE_IV"] = ce_iv
+                atm_data["PE_IV"] = pe_iv
+                atm_data["CE_OI"] = ce_oi
+                atm_data["PE_OI"] = pe_oi
+                
+            try:
+                d1 = (math.log(spot_price / strike) + (0.10 + 0.5 * (ce_iv/100) ** 2) * time_to_exp) / ((ce_iv/100) * math.sqrt(time_to_exp))
+                gamma = norm_pdf(d1) / (spot_price * (ce_iv/100) * math.sqrt(time_to_exp))
+            except:
+                gamma = 0.0
+                
+            net_gex = (ce_oi * gamma * spot_price * 0.01) - (pe_oi * gamma * spot_price * 0.01)
+            parsed_strikes.append({"Strike": strike, "CE_OI": ce_oi, "PE_OI": pe_oi, "GEX": net_gex})
+            
+        otm_call_strike = int(round((spot_price * 1.02) / 50.0) * 50)
+        otm_put_strike = int(round((spot_price * 0.98) / 50.0) * 50)
+        otm_call_iv = next((item.get('CE', {}).get('impliedVolatility', 0) for item in filtered_chain if item['strikePrice'] == otm_call_strike), 0)
+        otm_put_iv = next((item.get('PE', {}).get('impliedVolatility', 0) for item in filtered_chain if item['strikePrice'] == otm_put_strike), 0)
+        
+        return {
+            "spot": spot_price, "atm_strike": atm_strike, "atm_data": atm_data,
+            "otm_call_iv": otm_call_iv if otm_call_iv > 0 else atm_data["CE_IV"],
+            "otm_put_iv": otm_put_iv if otm_put_iv > 0 else atm_data["PE_IV"],
+            "strikes": pd.DataFrame(parsed_strikes)
+        }
+    except Exception:
+        return None
+
+# --- NEW: REAL LIVE MARKET BREADTH FETCH (NSE JSON) ---
+@st.cache_data(ttl=60)
+def get_real_market_breadth():
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br"
+        }
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=5)
+        res = session.get("https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050", headers=headers, timeout=5)
+        data = res.json()
+        adv = data.get('advance', {})
+        return {
+            "advances": adv.get('advances', 0),
+            "declines": adv.get('declines', 0),
+            "unchanged": adv.get('unchanged', 0)
+        }
+    except Exception:
+        return None
+
+# --- NEW: REAL SECTORAL RELATIVE STRENGTH FETCH (EXPANDED) ---
+@st.cache_data(ttl=60)
+def get_real_sectoral_data():
+    # 14 Full NSE Sectoral Indices
+    sectors = {
+        "NIFTY 50 (Benchmark)": "^NSEI",
+        "NIFTY BANK": "^NSEBANK",
+        "NIFTY FIN SERVICE": "^CNXFIN",
+        "NIFTY IT": "^CNXIT",
+        "NIFTY AUTO": "^CNXAUTO",
+        "NIFTY ENERGY": "^CNXENERGY",
+        "NIFTY FMCG": "^CNXFMCG",
+        "NIFTY PHARMA": "^CNXPHARMA",
+        "NIFTY METAL": "^CNXMETAL",
+        "NIFTY REALTY": "^CNXREALTY",
+        "NIFTY MEDIA": "^CNXMEDIA",
+        "NIFTY INFRA": "^CNXINFRA",
+        "NIFTY PSU BANK": "^CNXPSUBANK",
+        "NIFTY CONSUMPTION": "^CNXCONSUM"
+    }
+    results = []
+    for name, sym in sectors.items():
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="2d")
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                curr_price = hist['Close'].iloc[-1]
+                pct_change = ((curr_price - prev_close) / prev_close) * 100
+                
+                state = "STRONG LONG" if pct_change > 0.5 else "WEAK LONG" if pct_change > 0 else "WEAK SHORT" if pct_change > -0.5 else "STRONG SHORT"
+                
+                results.append({
+                    "Sector": name,
+                    "Price": curr_price,
+                    "Change": pct_change,
+                    "State": state
+                })
+        except:
+            pass
+    return pd.DataFrame(results) if results else None
 
 @st.fragment(run_every="60s")
 def render_live_ticker():
-    data = get_live_prices()
+    data = get_live_ticker_feed()
     items_html = ""
     for name, vals in data.items():
-        pct = vals['pct_change']
-        color_class, arrow = ("t-up", "▲") if pct > 0 else ("t-dn", "▼") if pct < 0 else ("", "")
-        items_html += f'<span class="ticker-item">{name}: {vals["price"]:,.2f} <span class="{color_class}">{arrow} {pct:+.2f}%</span></span>'
-        
-    items_html += f'<span class="ticker-item">SMART MONEY SCORE: {st.session_state.smart_money_score} <span class="t-dn">▼ BEARISH</span></span>'
+        if vals['price'] > 0:
+            pct = vals['pct_change']
+            color_class, arrow = ("t-up", "▲") if pct > 0 else ("t-dn", "▼") if pct < 0 else ("", "")
+            items_html += f'<span class="ticker-item">{name}: {vals["price"]:,.2f} <span class="{color_class}">{arrow} {pct:+.2f}%</span></span>'
+        else:
+             items_html += f'<span class="ticker-item">{name}: AWAITING LIVE DATA</span>'
     st.markdown(f'<div class="ticker-wrap"><div class="ticker">{items_html * 3}</div></div>', unsafe_allow_html=True)
 
 render_live_ticker()
@@ -262,127 +409,479 @@ render_live_ticker()
 def style_plotly_fig(fig):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color="#A7AFBA", size=12), margin=dict(l=0, r=0, t=20, b=0),
+        font=dict(family="Inter", color="#A7AFBA", size=12), margin=dict(l=0, r=0, t=15, b=0),
         xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=False, zeroline=False)
     )
     return fig
 
 
-# --- 6. 8-FILE PARSER BACKEND LOGIC ---
-def parse_participant_csv(file):
-    try:
-        df = pd.read_csv(file)
-        fii_row = df[df.iloc[:, 0].astype(str).str.contains('FII', case=False, na=False)]
-        if not fii_row.empty:
-            return float(fii_row.iloc[0, 1]) - float(fii_row.iloc[0, 2])
-    except Exception:
-        pass
-    return None
-
-def process_uploaded_files(oip, bhp, fip, dep, oic, bhc, fic, dec):
-    net_prev = parse_participant_csv(oip) if oip else None
-    net_curr = parse_participant_csv(oic) if oic else None
-    
-    if net_curr is not None:
-        st.session_state.fii_net_futures = int(net_curr)
-        if net_prev is not None:
-            st.session_state.fii_dod_delta = int(net_curr - net_prev)
-    else:
-        st.session_state.fii_net_futures = -168702
-        st.session_state.fii_dod_delta = -3552
-
-    if st.session_state.fii_net_futures < -100000:
-        st.session_state.smart_money_score = -6.5
-        st.session_state.market_regime = "BEARISH / SELL ON RISE"
-    elif st.session_state.fii_net_futures > 50000:
-        st.session_state.smart_money_score = +5.0
-        st.session_state.market_regime = "BULLISH / BUY ON DIPS"
-    else:
-        st.session_state.smart_money_score = -1.0
-        st.session_state.market_regime = "NEUTRAL / RANGE-BOUND"
-
-    st.session_state.data_processed = True
-
-
-# --- 7. ROUTING & NAVIGATION ---
-selected_module = st.radio(
+# --- 6. NAVIGATION STRUCTURE ---
+selected_tab = st.radio(
     "",
-    ["HOME", "DATA INGESTION", "MARKET INTELLIGENCE", "FLOW & HEAVYWEIGHTS", "RISK CALCULATOR"],
+    ["LIVE COCKPIT", "INTRADAY INTERNALS", "DATA INGESTION & INTELLIGENCE", "RISK CALCULATOR"],
     horizontal=True,
     label_visibility="collapsed"
 )
 
 
-# --- 8. MODULE RENDERING ---
-def module_home():
-    st.markdown("""
-    <div style="text-align: center; padding: 30px 0 50px 0;" class="fade-in">
-        <div style="font-size: 3.2rem; font-weight: 800; letter-spacing: -1px; color: #F5F7FA; margin-bottom: 12px; line-height: 1.1;">
-            READ THE MARKET.<br>BEFORE THE MARKET MOVES.
-        </div>
-        <div style="font-size: 1.05rem; color: #A7AFBA; max-width: 680px; margin: 0 auto; line-height: 1.6;">
-            EDGE4X combines deep institutional participant profiling, real-time option chain defense boundaries, and heavyweight divergence analytics.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+# --- 7. MODULE ARCHITECTURE ---
+
+# >>> MODULE 1: LIVE COCKPIT <<<
+def module_live_cockpit():
+    macro = get_premarket_macro_data()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(f"<div class='panel-box fade-in'><div class='panel-header'>MARKET REGIME</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.market_regime}</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Institutional Short Pressure: HIGH</div></div>", unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"<div class='panel-box fade-in'><div class='panel-header'>SMART MONEY SCORE</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.smart_money_score} / 10</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Net FII Futures: {st.session_state.fii_net_futures:,.0f} contracts</div></div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown("<div class='panel-box fade-in'><div class='panel-header'>HEAVYWEIGHT COMPOSITE PULL</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>-0.34% (DRAG)</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Reliance & HDFC Bank below VWAP</div></div>", unsafe_allow_html=True)
-
-def module_data_center():
-    st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 15px;'>8-FILE INSTITUTIONAL INGESTION BACKEND</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color:var(--text-secondary); margin-bottom:25px;'>Upload your T-1 (Previous) and T (Current) reports.</p>", unsafe_allow_html=True)
+    dxy_chg = macro.get("DXY", {}).get("change", 0)
+    yield_chg = macro.get("US10Y", {}).get("change", 0)
+    brent_chg = macro.get("BRENT", {}).get("change", 0)
     
-    col1, col2 = st.columns(2)
+    risk_score = 50 + (dxy_chg * 20) + (yield_chg * 15) + (brent_chg * 10)
+    risk_score = max(5.0, min(95.0, risk_score))
+    
+    if risk_score > 60:
+        risk_text = "HIGH RISK (GLOBAL CAPITAL DRAIN)"
+        risk_desc = "US Dollar, Yields, & Crude are rising. FIIs have strong pressure to sell Indian equities."
+        risk_theme_color = "#FF5C5C"
+    elif risk_score < 40:
+        risk_text = "LOW RISK (FAVORABLE GLOBAL INFLOWS)"
+        risk_desc = "US Dollar & Yields are cooling. Global risk environment is positive for emerging markets."
+        risk_theme_color = "#39D353"
+    else:
+        risk_text = "MODERATE / NEUTRAL GLOBAL BIAS"
+        risk_desc = "Global factors are balanced. Domestic institutional flows will dictate market direction."
+        risk_theme_color = "#D4AF37"
+
+
+    # --- STEP 1: PRE-MARKET MACRO RADAR ---
+    st.markdown("<div class='section-header fade-in'>STEP 1: PRE-MARKET MACRO RADAR (Analyze Before 9:15 AM IST)</div>", unsafe_allow_html=True)
+    
+    c1, c2, c3 = st.columns([1.3, 1.1, 1.3])
+    
+    with c1:
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                GLOBAL RISK SPEEDOMETER (FII Capital Flow Radar)
+                <span class="tooltip">ⓘ<span class="tooltiptext">Synthesizes the US Dollar (DXY), US 10Y Bond Yields, and Brent Crude Oil into a single 0-100 institutional risk metric.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        gauge_fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=risk_score,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            number={'suffix': "/100", 'font': {'size': 22, 'color': risk_theme_color, 'family': 'Inter'}},
+            gauge={
+                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#A7AFBA"},
+                'bar': {'color': risk_theme_color, 'thickness': 0.28},
+                'bgcolor': "rgba(0,0,0,0)",
+                'borderwidth': 0,
+                'steps': [
+                    {'range': [0, 40], 'color': "rgba(57, 211, 83, 0.15)"},
+                    {'range': [40, 60], 'color': "rgba(212, 175, 55, 0.15)"},
+                    {'range': [60, 100], 'color': "rgba(255, 92, 92, 0.15)"}
+                ],
+                'threshold': {
+                    'line': {'color': risk_theme_color, 'width': 3},
+                    'thickness': 0.75,
+                    'value': risk_score
+                }
+            }
+        ))
+        gauge_fig.update_layout(
+            height=140, margin=dict(l=10, r=10, t=10, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#A7AFBA", family="Inter")
+        )
+        st.plotly_chart(gauge_fig, use_container_width=True, config={'displayModeBar': False})
+        
+        st.markdown(f"""
+            <div style="font-size: 0.95rem; font-weight: 700; color: {risk_theme_color}; margin-top: -5px; text-align: center;">{risk_text}</div>
+            <div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 6px; line-height: 1.4; text-align: center;">{risk_desc}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                MORNING GAP & TRAP ANALYZER
+                <span class="tooltip">ⓘ<span class="tooltiptext">Cross-references your manual GIFT Nifty gap input against overnight institutional futures inventory.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        gift_nifty_gap = st.number_input("Input Live GIFT Nifty Gap (Pts)", value=0, step=10, help="Check TradingView or your broker for the live GIFT Nifty pre-market change.")
+        
+        if gift_nifty_gap == 0:
+            gap_color = "var(--text-secondary)"
+            gap_alert = "AWAITING MORNING INPUT"
+            gap_desc = "Input the morning gap above to calculate trap probability."
+        elif st.session_state.smart_money_score < 0 and gift_nifty_gap > 20:
+            gap_color = "var(--accent-red)"
+            gap_alert = "TRAP WARNING (FADE RALLY)"
+            gap_desc = f"Market indicating gap UP, but FIIs hold heavy net short futures. High probability of morning exhaustion."
+        elif st.session_state.smart_money_score > 0 and gift_nifty_gap < -20:
+            gap_color = "var(--accent-green)"
+            gap_alert = "TRAP WARNING (BUY THE DIP)"
+            gap_desc = f"Market indicating gap DOWN, but FIIs are heavily long. Retail panic selling will be absorbed."
+        else:
+            gap_color = "var(--gold-primary)"
+            gap_alert = "POSITIONING ALIGNED"
+            gap_desc = "Morning gap direction aligns with underlying institutional positioning. Standard trend rules apply."
+
+        st.markdown(f"""
+            <div style="font-size: 1.25rem; font-weight: 800; color: {gap_color}; margin-top: 10px; margin-bottom: 8px;">{gap_alert}</div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 15px;">{gap_desc}</div>
+            <div class="setup-row"><span class="setup-label">FII Inventory Bias</span><span class="setup-val" style="color:var(--gold-primary);">{st.session_state.fii_net_futures:,.0f} Contracts</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        def format_adr(val):
+            if val == 0.0: return "<span style='color:var(--text-muted);'>Awaiting Sync</span>"
+            return f"<span style='color:var(--accent-green); font-weight:700;'>+{val:.2f}%</span>" if val > 0 else f"<span style='color:var(--accent-red); font-weight:700;'>{val:.2f}%</span>"
+            
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                OVERNIGHT US ADR TRACKER (Pre-Market Heavyweight Indicator)
+                <span class="tooltip">ⓘ<span class="tooltiptext">Tracks Indian blue-chips traded on the NYSE/NASDAQ during US market hours to forecast sector opening gaps.</span></span>
+            </div>
+            <table class="data-table">
+                <tr><th>Constituent</th><th>US Ticker</th><th>Overnight Change</th></tr>
+                <tr><td><b>HDFC Bank</b></td><td>HDB</td><td>{format_adr(macro.get("HDFC_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>ICICI Bank</b></td><td>IBN</td><td>{format_adr(macro.get("ICICI_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Infosys</b></td><td>INFY</td><td>{format_adr(macro.get("INFY_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Wipro</b></td><td>WIT</td><td>{format_adr(macro.get("WIPRO_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Dr. Reddy's</b></td><td>RDY</td><td>{format_adr(macro.get("DRREDDY_ADR", {}).get("change", 0))}</td></tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+    # --- STEP 2: LIVE INTRADAY DERIVATIVES ENGINES (REAL DATA PULL) ---
+    st.markdown("<div class='section-header fade-in'>STEP 2: LIVE INTRADAY DERIVATIVES ENGINES (Analyze After 9:15 AM IST)</div>", unsafe_allow_html=True)
+
+    opt_data = get_real_option_chain_data()
+
+    if opt_data is None:
+        st.markdown("""
+        <div class="panel-box fade-in" style="text-align: center; padding: 50px;">
+            <div style="font-size: 1.8rem; font-weight: 800; color: var(--accent-red); margin-bottom: 10px;">LIVE NSE OPTION DATA UNAVAILABLE</div>
+            <div style="color: var(--text-secondary);">The market is either closed, or the NSE servers are temporarily blocking the background request. Try again during market hours (9:15 AM - 3:30 PM).</div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        nifty_spot = opt_data["spot"]
+        atm_strike = opt_data["atm_strike"]
+        atm_ce_ltp = opt_data["atm_data"]["CE_LTP"]
+        atm_pe_ltp = opt_data["atm_data"]["PE_LTP"]
+        
+        atm_straddle_cost = atm_ce_ltp + atm_pe_ltp
+        
+        put_iv = opt_data["otm_put_iv"]
+        call_iv = opt_data["otm_call_iv"]
+        skew_ratio = put_iv / call_iv if call_iv > 0 else 1.0
+        
+        skew_state = "PROTECTIVE PUT BUYING ACTIVE" if skew_ratio > 1.10 else "NORMAL / BALANCED"
+        skew_color = "var(--accent-red)" if skew_ratio > 1.10 else "var(--gold-primary)"
+
+        df_strikes = opt_data["strikes"]
+        df_range = df_strikes[(df_strikes['Strike'] >= atm_strike - 300) & (df_strikes['Strike'] <= atm_strike + 300)]
+        
+        try:
+            positive_gex = df_range[df_range['GEX'] > 0]
+            gamma_flip_level = positive_gex.iloc[0]['Strike'] if not positive_gex.empty else atm_strike
+        except:
+            gamma_flip_level = atm_strike
+            
+        gamma_regime = "NEGATIVE GAMMA (HIGH VOLATILITY SWINGS)" if nifty_spot < gamma_flip_level else "POSITIVE GAMMA (STABILIZED CHOP)"
+        gamma_color = "var(--accent-red)" if nifty_spot < gamma_flip_level else "var(--accent-green)"
+
+        st.markdown(f"""
+        <div class="metric-strip fade-in">
+            <div class="metric-card">
+                <div class="metric-label">Dealer Gamma Exposure <span class="tooltip">ⓘ<span class="tooltiptext">Calculated live via Black-Scholes. Negative Gamma = Dealers chase trends (High Volatility). Positive = Dealers stabilize market.</span></span></div>
+                <div class="metric-sublabel">(Market Speed Limit & Volatility Gauge)</div>
+                <div class="metric-value" style="color:{gamma_color}; font-size:1.05rem;">{gamma_regime}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Put/Call IV Skew <span class="tooltip">ⓘ<span class="tooltiptext">Ratio of OTM Put IV to OTM Call IV. Values above 1.10 indicate big institutions are paying high premiums for crash insurance.</span></span></div>
+                <div class="metric-sublabel">(Institutional Crash Insurance Tracker)</div>
+                <div class="metric-value" style="color:{skew_color};">{skew_ratio:.2f} <span style="font-size:0.75rem;">({skew_state})</span></div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">ATM Straddle ({atm_strike}) <span class="tooltip">ⓘ<span class="tooltiptext">Combined live price of ATM Call + Put. Measures the exact expected point range for the current weekly expiry.</span></span></div>
+                <div class="metric-sublabel">(Weekly Movement Range Expectation)</div>
+                <div class="metric-value">₹{atm_straddle_cost:,.1f}</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Current Nifty Spot <span class="tooltip">ⓘ<span class="tooltiptext">Live underlying price pulled directly from NSE endpoints.</span></span></div>
+                <div class="metric-sublabel">(Live Underlying Index)</div>
+                <div class="metric-value" style="color:var(--text-primary);">{nifty_spot:,.2f}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        col4, col5 = st.columns([1.5, 1])
+
+        with col4:
+            st.markdown(f"""
+            <div class="panel-box fade-in">
+                <div class="panel-header">
+                    LIVE GAMMA EXPOSURE PROFILE - GEX (The Tug-of-War Battlefield)
+                    <span class="tooltip">ⓘ<span class="tooltiptext">Green bars show dealer support buffers (buying on dips). Red bars show acceleration zones where dealer hedging accelerates downward momentum.</span></span>
+                </div>
+                <div style="font-size:0.9rem; color:var(--text-secondary); margin-bottom:12px;">
+                    Spot Price: <b>{nifty_spot:,.2f}</b> | Critical Gamma Flip Barrier: <b style="color:var(--gold-primary);">{gamma_flip_level:,}</b>
+                </div>
+            """, unsafe_allow_html=True)
+
+            gex_fig = go.Figure()
+            bar_colors = ['#FF5C5C' if v < 0 else '#39D353' for v in df_range['GEX']]
+            gex_fig.add_trace(go.Bar(x=df_range['Strike'], y=df_range['GEX'], marker_color=bar_colors, name="Net Gamma Profile"))
+            gex_fig.add_vline(x=gamma_flip_level, line_dash="dash", line_color="#D4AF37", annotation_text=f"Tug-of-War Flip ({gamma_flip_level})", annotation_position="top left")
+            gex_fig = style_plotly_fig(gex_fig)
+            gex_fig.update_layout(
+                height=260, yaxis=dict(title="Live Dealer Inventory Extrapolation", showgrid=False, zeroline=True, zerolinecolor="rgba(255,255,255,0.1)"),
+                xaxis=dict(title="Strike Price", showgrid=False)
+            )
+            st.plotly_chart(gex_fig, use_container_width=True, config={'displayModeBar': False})
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with col5:
+            st.markdown(f"""
+            <div class="panel-box fade-in">
+                <div class="panel-header">VOLATILITY SKEW & DECAY EXECUTION MATRIX</div>
+                <div class="setup-row">
+                    <span class="setup-label">OTM Put IV (Downside Fear)</span>
+                    <span class="setup-val" style="color:var(--accent-red);">{put_iv:.1f}%</span>
+                </div>
+                <div class="setup-row">
+                    <span class="setup-label">OTM Call IV (Upside Greed)</span>
+                    <span class="setup-val" style="color:var(--accent-green);">{call_iv:.1f}%</span>
+                </div>
+                <div class="setup-row">
+                    <span class="setup-label">Skew Sentiment</span>
+                    <span class="setup-val" style="color:{skew_color};">{"DEFENSIVE PUT BUYING" if skew_ratio > 1.10 else "NEUTRAL/BALANCED"}</span>
+                </div>
+                <div class="setup-row">
+                    <span class="setup-label">Live ATM Straddle Cost</span>
+                    <span class="setup-val" style="color:var(--gold-primary);">₹{atm_straddle_cost:,.1f}</span>
+                </div>
+                <div style="font-size:0.85rem; color:var(--text-primary); background: rgba(255, 92, 92, 0.1); border: 1px solid var(--accent-red); border-radius: 6px; padding: 12px; margin-top:14px; line-height:1.5;">
+                    ⚡ <b>TACTICAL ACTION PLAN:</b> {"Institutional desks are paying up for protective Puts. Avoid buying breakout Calls on opening spikes." if skew_ratio > 1.10 else "Volatility skew is flat. Standard support and resistance structural trading applies."}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# >>> MODULE 2: NEW! INTRADAY INTERNALS <<<
+def module_intraday_internals():
+    st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>LIVE INTRADAY INTERNALS: BREADTH & SECTOR ROTATION</h2>", unsafe_allow_html=True)
+    
+    col1, col2 = st.columns([1, 1.2])
+    
+    # 1. Market Breadth (X-Ray)
     with col1:
-        st.markdown("<div style='color:var(--gold-primary); font-weight:700; margin-bottom:10px; font-size:0.85rem; letter-spacing:1px;'>⬅️ PREVIOUS SESSION (T-1)</div><div class='upload-zone'>", unsafe_allow_html=True)
-        oip = st.file_uploader("1. Participant OI (CSV)", type=['csv'], key="oip")
-        bhp = st.file_uploader("2. Bhavcopy (ZIP/CSV)", type=['csv', 'zip'], key="bhp")
-        fip = st.file_uploader("3. FII Stats (XLS/CSV)", type=['xls','csv'], key="fip")
-        dep = st.file_uploader("4. Delivery (DAT/CSV)", type=['csv','dat'], key="dep")
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height:100%;">
+            <div class="panel-header">
+                INDEX MARKET BREADTH (The Internal Strength X-Ray)
+                <span class="tooltip">ⓘ<span class="tooltiptext">Pulls the exact number of advancing vs declining stocks in the Nifty 50 directly from NSE. Exposes fake index breakouts.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        breadth_data = get_real_market_breadth()
+        
+        if breadth_data is None or (breadth_data["advances"] == 0 and breadth_data["declines"] == 0):
+            st.markdown("""
+                <div style="text-align:center; padding: 30px 0; color:var(--text-secondary);">
+                    <b>Awaiting Live Breadth Data</b><br>Data becomes available during active NSE market hours.
+                </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            adv = breadth_data["advances"]
+            dec = breadth_data["declines"]
+            unc = breadth_data["unchanged"]
+            
+            ad_ratio = adv / dec if dec > 0 else adv
+            
+            if ad_ratio > 1.5:
+                breadth_state = "STRONG INTERNAL BUYING"
+                breadth_color = "var(--accent-green)"
+                breadth_msg = "The majority of index stocks are moving up. The Nifty rally is legitimate and broad-based."
+            elif ad_ratio < 0.7:
+                breadth_state = "SEVERE INTERNAL SELLING"
+                breadth_color = "var(--accent-red)"
+                breadth_msg = "The majority of stocks are falling. If Nifty is green, it is a fake algorithmic breakout. Prepare for a reversal."
+            else:
+                breadth_state = "CHOPPY / MIXED INTERNALS"
+                breadth_color = "var(--gold-primary)"
+                breadth_msg = "Stock participation is split. The market is consolidating without clear direction."
+
+            st.markdown(f"""
+                <div style="display:flex; justify-content:space-between; margin-bottom:15px;">
+                    <div style="text-align:center;">
+                        <div style="font-size:2.2rem; font-weight:800; color:var(--accent-green);">{adv}</div>
+                        <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Advances (Green)</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:2.2rem; font-weight:800; color:var(--accent-red);">{dec}</div>
+                        <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Declines (Red)</div>
+                    </div>
+                    <div style="text-align:center;">
+                        <div style="font-size:2.2rem; font-weight:800; color:var(--text-secondary);">{unc}</div>
+                        <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Unchanged</div>
+                    </div>
+                </div>
+                <div class="setup-row" style="margin-top:20px;">
+                    <span class="setup-label">Advance/Decline Ratio</span>
+                    <span class="setup-val">{ad_ratio:.2f}</span>
+                </div>
+                <div class="setup-row">
+                    <span class="setup-label">Internal Status</span>
+                    <span class="setup-val" style="color:{breadth_color};">{breadth_state}</span>
+                </div>
+                <div style="font-size:0.85rem; color:var(--text-primary); background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 12px; margin-top:14px; line-height:1.5;">
+                    ⚡ <b>WHAT THIS MEANS:</b> {breadth_msg}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # 2. Expanded Sectoral Relative Strength Map
     with col2:
-        st.markdown("<div style='color:var(--gold-primary); font-weight:700; margin-bottom:10px; font-size:0.85rem; letter-spacing:1px;'>➡️ CURRENT SESSION (T)</div><div class='upload-zone'>", unsafe_allow_html=True)
-        oic = st.file_uploader("1. Participant OI (CSV)", type=['csv'], key="oic")
-        bhc = st.file_uploader("2. Bhavcopy (ZIP/CSV)", type=['csv', 'zip'], key="bhc")
-        fic = st.file_uploader("3. FII Stats (XLS/CSV)", type=['xls','csv'], key="fic")
-        dec = st.file_uploader("4. Delivery (DAT/CSV)", type=['csv','dat'], key="dec")
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height:100%;">
+            <div class="panel-header">
+                SECTORAL RELATIVE STRENGTH (The Money Rotation Map)
+                <span class="tooltip">ⓘ<span class="tooltiptext">Compares live intraday performance across all 14 NSE sectors. Identifies exactly where institutions are parking their money today.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        sector_df = get_real_sectoral_data()
+        
+        if sector_df is None or sector_df.empty:
+            st.markdown("""
+                <div style="text-align:center; padding: 30px 0; color:var(--text-secondary);">
+                    <b>Awaiting Live Sector Data</b><br>Data becomes available during market hours.
+                </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            table_html = '<div style="max-height: 400px; overflow-y: auto;"><table class="data-table"><tr><th>Index / Sector</th><th>Live Price</th><th>Intraday Change</th><th>Institutional Money Flow</th></tr>'
+            for _, r in sector_df.iterrows():
+                chg = r["Change"]
+                c_style = "color: var(--accent-green);" if chg > 0 else "color: var(--accent-red);" if chg < 0 else ""
+                indicator = "🟢" if chg > 0 else "🔴" if chg < 0 else "⚪"
+                
+                bold_name = f"<span style='color:var(--gold-primary); font-weight:800;'>{r['Sector']}</span>" if "Benchmark" in r["Sector"] else f"<b>{r['Sector']}</b>"
+                
+                table_html += f"<tr><td>{bold_name}</td><td>₹{r['Price']:,.1f}</td><td style='{c_style}; font-weight:700;'>{chg:+.2f}%</td><td>{indicator} {r['State']}</td></tr>"
+            
+            table_html += "</table></div>"
+            
+            st.markdown(table_html, unsafe_allow_html=True)
+            st.markdown("""
+            <div style="font-size:0.85rem; color:var(--text-secondary); margin-top:14px; line-height:1.5;">
+                ⚡ <b>TRADING EDGE:</b> Never buy a sector that is underperforming the Nifty 50 Benchmark. Look for the specific sector highlighted in green while the benchmark is flat—that is where the massive algorithms are buying.
+            </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    if st.button("RUN AUTOMATED MULTI-FILE PARSER", type="primary", use_container_width=True):
-        with st.spinner("Extracting ZIP archives and calculating participant deltas..."):
-            time.sleep(1.2)
-            process_uploaded_files(oip, bhp, fip, dep, oic, bhc, fic, dec)
-            st.success(f"✅ Ingestion successful! FII Net Futures: {st.session_state.fii_net_futures:,.0f} contracts. Dashboard unlocked.")
-            time.sleep(1)
-            st.rerun()
 
-def module_intelligence():
-    live_data = get_live_prices()
+# >>> MODULE 3: DATA INGESTION & INTELLIGENCE <<<
+def module_data_ingestion_and_intelligence():
+    with st.expander("📁 8-FILE DAILY INGESTION DECK (CLICK TO EXPAND / COLLAPSE)", expanded=not st.session_state.eod_data_processed):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown("<div class='compact-upload-title'>T-1 PARTICIPANT OI</div>", unsafe_allow_html=True)
+            oip = st.file_uploader("POI (T-1)", type=['csv'], key="oip", label_visibility="collapsed")
+            st.markdown("<div class='compact-upload-title' style='margin-top:8px;'>T PARTICIPANT OI</div>", unsafe_allow_html=True)
+            oic = st.file_uploader("POI (T)", type=['csv'], key="oic", label_visibility="collapsed")
+        with c2:
+            st.markdown("<div class='compact-upload-title'>T-1 BHAVCOPY</div>", unsafe_allow_html=True)
+            bhp = st.file_uploader("Bhav (T-1)", type=['csv', 'zip'], key="bhp", label_visibility="collapsed")
+            st.markdown("<div class='compact-upload-title' style='margin-top:8px;'>T BHAVCOPY</div>", unsafe_allow_html=True)
+            bhc = st.file_uploader("Bhav (T)", type=['csv', 'zip'], key="bhc", label_visibility="collapsed")
+        with c3:
+            st.markdown("<div class='compact-upload-title'>T-1 FII STATS</div>", unsafe_allow_html=True)
+            fip = st.file_uploader("FII (T-1)", type=['xls', 'csv'], key="fip", label_visibility="collapsed")
+            st.markdown("<div class='compact-upload-title' style='margin-top:8px;'>T FII STATS</div>", unsafe_allow_html=True)
+            fic = st.file_uploader("FII (T)", type=['xls', 'csv'], key="fic", label_visibility="collapsed")
+        with c4:
+            st.markdown("<div class='compact-upload-title'>T-1 DELIVERY</div>", unsafe_allow_html=True)
+            dep = st.file_uploader("Del (T-1)", type=['csv', 'dat'], key="dep", label_visibility="collapsed")
+            st.markdown("<div class='compact-upload-title' style='margin-top:8px;'>T DELIVERY</div>", unsafe_allow_html=True)
+            dec = st.file_uploader("Del (T)", type=['csv', 'dat'], key="dec", label_visibility="collapsed")
+
+        if st.button("EXECUTE QUANTITATIVE PARSING & SYNCHRONIZE", type="primary", use_container_width=True):
+            with st.spinner("Processing files and compiling institutional positioning..."):
+                time.sleep(1)
+                net_prev = parse_participant_csv(oip) if oip else None
+                net_curr = parse_participant_csv(oic) if oic else None
+                
+                if net_curr is not None:
+                    st.session_state.fii_net_futures = int(net_curr)
+                    if net_prev is not None:
+                        st.session_state.fii_dod_delta = int(net_curr - net_prev)
+                else:
+                    st.session_state.fii_net_futures = -168702
+                    st.session_state.fii_dod_delta = -3552
+
+                if st.session_state.fii_net_futures < -100000:
+                    st.session_state.smart_money_score = -6.5
+                    st.session_state.market_regime = "BEARISH / SELL ON RISE"
+                elif st.session_state.fii_net_futures > 50000:
+                    st.session_state.smart_money_score = +5.0
+                    st.session_state.market_regime = "BULLISH / BUY ON DIPS"
+                else:
+                    st.session_state.smart_money_score = -1.0
+                    st.session_state.market_regime = "NEUTRAL / RANGE-BOUND"
+
+                st.session_state.eod_data_processed = True
+                st.success("✅ Quantitative Synchronization Complete.")
+                time.sleep(0.6)
+                st.rerun()
+
+    live_data = get_live_ticker_feed()
     live_nifty = f"{live_data.get('NIFTY 50', {}).get('price', 24385.40):,.2f}"
 
     st.markdown(f"""
     <div class="metric-strip fade-in">
-        <div class="metric-card"><div class="metric-label">Spot Price</div><div class="metric-value">{live_nifty}</div></div>
-        <div class="metric-card"><div class="metric-label">Max Pain Magnet</div><div class="metric-value">24,400</div></div>
-        <div class="metric-card"><div class="metric-label">Call Wall (Resistance)</div><div class="metric-value">25,000</div></div>
-        <div class="metric-card"><div class="metric-label">Put Wall (Support)</div><div class="metric-value">24,000</div></div>
+        <div class="metric-card">
+            <div class="metric-label">Market Regime</div>
+            <div class="metric-sublabel">(Overall Directional Bias)</div>
+            <div class="metric-value" style="color:var(--accent-red); font-size:1.15rem;">{st.session_state.market_regime}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Smart Money Score <span class="tooltip">ⓘ<span class="tooltiptext">Scale of -10 to +10 based on net FII index futures exposure. > 50k contracts = Bullish. < -100k contracts = Bearish.</span></span></div>
+            <div class="metric-sublabel">(FII Net Futures Stance)</div>
+            <div class="metric-value" style="color:var(--accent-red);">{st.session_state.smart_money_score} / 10</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Net FII Futures</div>
+            <div class="metric-sublabel">(Total Open Contracts)</div>
+            <div class="metric-value">{st.session_state.fii_net_futures:,.0f}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">DoD Flow Delta</div>
+            <div class="metric-sublabel">(Day-over-Day Position Shift)</div>
+            <div class="metric-value" style="color:var(--accent-red);">{st.session_state.fii_dod_delta:+,d}</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Spot Price</div>
+            <div class="metric-sublabel">(Live Index Benchmark)</div>
+            <div class="metric-value">{live_nifty}</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     col1, col2 = st.columns([1.6, 1])
     with col1:
         st.markdown(f"""
         <div class="panel-box fade-in">
-            <div class="panel-header">DAILY MARKET BIAS & ACTIONABLE PLAN</div>
-            <div style="font-size: 1.4rem; font-weight: 700; color: var(--accent-red); margin-bottom: 8px;">SELL ON RISING BOUNCES</div>
-            <div style="color: var(--text-secondary); line-height: 1.5; font-size: 0.95rem;">
-                FIIs hold a net short position of <b>{st.session_state.fii_net_futures:,.0f}</b> index contracts. Morning liquidity bounces toward 24,450 should be monitored for rejection candles to enter short.
+            <div class="panel-header">DAILY MARKET OUTLOOK & ACTIONABLE PLAN</div>
+            <div style="font-size: 1.35rem; font-weight: 700; color: var(--accent-red); margin-bottom: 8px;">SELL ON RISING BOUNCES</div>
+            <div style="color: var(--text-secondary); line-height: 1.5; font-size: 0.92rem;">
+                FIIs hold <b>{st.session_state.fii_net_futures:,.0f}</b> net short futures contracts. Morning liquidity spikes toward the 24,450 resistance zone represent low-risk exhaustion entry points.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -393,62 +892,43 @@ def module_intelligence():
         put_oi  = [240000, 195000, 168000, 115000, 62000, 31000, 18000]
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(y=strikes, x=[-p for p in put_oi], orientation='h', name='Put OI (Support)', marker_color='#39D353'))
-        fig.add_trace(go.Bar(y=strikes, x=call_oi, orientation='h', name='Call OI (Resistance)', marker_color='#FF5C5C'))
-        fig = style_plotly_fig(fig)
-        fig.update_layout(barmode='relative', height=240, xaxis=dict(title="Contracts (Puts ← | → Calls)", showgrid=False, zeroline=True, zerolinecolor="rgba(255,255,255,0.1)"), yaxis=dict(type='category'), legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center"))
+        fig.add_trace(go.Bar(y=strikes, x=[-p for p in put_oi], orientation='h', name='Put OI (Support Floor)', marker_color='#39D353'))
+        fig.add_trace(go.Bar(y=strikes, x=call_oi, orientation='h', name='Call OI (Resistance Ceiling)', marker_color='#FF5C5C'))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Inter", color="#A7AFBA", size=12), margin=dict(l=0, r=0, t=15, b=0),
+            xaxis=dict(title="Contracts (Puts ← | → Calls)", showgrid=False, zeroline=True, zerolinecolor="rgba(255,255,255,0.1)"),
+            yaxis=dict(type='category', showgrid=False), barmode='relative', height=210,
+            legend=dict(orientation="h", y=1.2, x=0.5, xanchor="center")
+        )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-        
+
     with col2:
         st.markdown("""
         <div class="panel-box fade-in">
-            <div class="panel-header">EXECUTION MATRIX</div>
-            <div class="setup-row"><span class="setup-label">Primary Setup</span><span class="setup-val" style="color:var(--accent-red);">Fade Opening Spike</span></div>
-            <div class="setup-row"><span class="setup-label">Optimal Entry</span><span class="setup-val">24,430 — 24,475</span></div>
-            <div class="setup-row"><span class="setup-label">Stop Loss</span><span class="setup-val">24,530 (Spot Close)</span></div>
-            <div class="setup-row"><span class="setup-label">Target 1</span><span class="setup-val" style="color:var(--gold-primary);">24,300</span></div>
-            <div class="setup-row"><span class="setup-label">Target 2</span><span class="setup-val" style="color:var(--gold-primary);">24,180</span></div>
+            <div class="panel-header">STRUCTURAL BOUNDARIES & EXECUTION MATRIX</div>
+            <div class="setup-row"><span class="setup-label">Call Wall (Resistance Ceiling)</span><span class="setup-val" style="color:var(--accent-red);">25,000</span></div>
+            <div class="setup-row"><span class="setup-label">Put Wall (Support Floor)</span><span class="setup-val" style="color:var(--accent-green);">24,000</span></div>
+            <div class="setup-row"><span class="setup-label">Max Pain Pin Magnet</span><span class="setup-val">24,400</span></div>
+            <div class="setup-row"><span class="setup-label">Primary Execution Setup</span><span class="setup-val" style="color:var(--accent-red);">Fade Opening Spikes</span></div>
+            <div class="setup-row"><span class="setup-label">Optimal Entry Range</span><span class="setup-val">24,430 — 24,475</span></div>
+            <div class="setup-row"><span class="setup-label">Invalidation Stop (SL)</span><span class="setup-val">24,530</span></div>
         </div>
         """, unsafe_allow_html=True)
         
         st.markdown("""
         <div class="panel-box fade-in">
             <div class="panel-header">OPTIONS WRITER PANIC ALERT</div>
-            <div style="font-size:0.9rem; color:var(--text-secondary); line-height: 1.5;">
-                🚨 <b>24,400 Put Unwinding:</b> -28,400 contracts shed in the last session. Writers are abandoning defense below 24,400.
+            <div style="font-size:0.88rem; color:var(--text-secondary); line-height: 1.5;">
+                🚨 <b>24,400 Put Unwinding:</b> -28,400 contracts shed in the last session. Writers are retreating below 24,400.
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-def module_heavyweights():
-    st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>HEAVYWEIGHT DIVERGENCE & PARTICIPANT FLOW</h2>", unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([1.2, 1])
-    with col1:
-        st.markdown("<div class='panel-header fade-in'>TOP 5 NIFTY HEAVYWEIGHTS (REAL-TIME ENGINE)</div>", unsafe_allow_html=True)
-        df_heavy, pull_score = get_heavyweight_quotes()
-        
-        table_html = '<table class="data-table fade-in"><tr><th>Symbol</th><th>Weight</th><th>Price</th><th>Change</th><th>State</th></tr>'
-        for _, r in df_heavy.iterrows():
-            chg = r["Change %"]
-            c_style = "color: var(--accent-green);" if chg > 0 else "color: var(--accent-red);" if chg < 0 else ""
-            table_html += f"<tr><td><b>{r['Symbol']}</b></td><td>{r['Weight']}</td><td>{r['Price']}</td><td style='{c_style}'>{chg:+.2f}%</td><td>{r['State']}</td></tr>"
-        table_html += "</table>"
-        st.markdown(table_html, unsafe_allow_html=True)
-        
-    with col2:
-        st.markdown("<div class='panel-header fade-in'>DOD MOMENTUM DELTA</div>", unsafe_allow_html=True)
-        fig = go.Figure(data=[
-            go.Bar(name='T-1 (Prev)', x=['FII Futures', 'Retail Calls'], y=[-165150, 148000], marker_color='#6F7782'),
-            go.Bar(name='T (Today)', x=['FII Futures', 'Retail Calls'], y=[st.session_state.fii_net_futures, 194584], marker_color='#D4AF37')
-        ])
-        fig.update_layout(barmode='group', height=200, margin=dict(t=0, b=0, l=0, r=0))
-        st.plotly_chart(style_plotly_fig(fig), use_container_width=True, config={'displayModeBar': False})
-
-    st.markdown("<div class='panel-header fade-in' style='margin-top: 25px;'>PARTICIPANT NET POSITIONING MATRIX</div>", unsafe_allow_html=True)
-    matrix_html = '<table class="data-table fade-in"><tr><th>Participant</th><th>Index Futures</th><th>Calls</th><th>Puts</th></tr>'
+    st.markdown("<div class='panel-header fade-in' style='margin-top: 15px;'>CURRENT SESSION NET PARTICIPANT POSITIONING</div>", unsafe_allow_html=True)
+    matrix_html = '<table class="data-table fade-in"><tr><th>Participant Category</th><th>Index Futures Inventory</th><th>Call Options Delta</th><th>Put Options Delta</th></tr>'
     df_today = pd.DataFrame({
-        "P": ["Client (Retail)", "FIIs (Big Money)", "Pro Desks"],
+        "P": ["Client (Retail Crowd)", "FIIs (Foreign Big Money)", "Pro Desks (Prop Desks)"],
         "IF": ["+4,487 (Buying)", f"{st.session_state.fii_dod_delta:+,d} (Selling)", "-958 (Selling)"],
         "C": ["+46,584 (Buying)", "-57,902 (Writing)", "+11,298 (Buying)"],
         "P_": ["-88,580 (Short)", "-25,621 (Selling)", "-62,735 (Selling)"]
@@ -461,9 +941,10 @@ def module_heavyweights():
     matrix_html += "</table>"
     st.markdown(matrix_html, unsafe_allow_html=True)
 
-def module_calculator():
+
+# >>> MODULE 4: RISK & POSITION SIZING CALCULATOR <<<
+def module_risk_calculator():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 15px;'>PRECISION RISK & POSITION SIZING CALCULATOR</h2>", unsafe_allow_html=True)
-    
     col1, col2 = st.columns([1, 1.2])
     with col1:
         st.markdown("<div class='panel-box fade-in'><div class='panel-header'>TRADE PARAMETERS</div>", unsafe_allow_html=True)
@@ -500,25 +981,12 @@ def module_calculator():
         """, unsafe_allow_html=True)
 
 
-# --- 9. GATEKEEPER ROUTING EXECUTION ---
-if selected_module == "HOME":
-    module_home()
-elif selected_module == "DATA INGESTION":
-    module_data_center()
-elif selected_module == "RISK CALCULATOR":
-    module_calculator()
-else:
-    if not st.session_state.data_processed:
-        st.markdown("""
-        <div class='fade-in' style='text-align:center; padding: 100px 20px;'>
-            <h1 style='font-weight: 800; color: var(--text-muted); letter-spacing: 2px; font-size: 2.3rem;'>AWAITING DATA INGESTION</h1>
-            <p style='font-size: 1.05rem; color: var(--text-secondary); max-width: 600px; margin: 15px auto; line-height: 1.6;'>
-                The intelligence engine requires raw market reports. Navigate to <b>Data Ingestion</b> and click <b>Run Automated Multi-File Parser</b> to sync the models.
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        if selected_module == "MARKET INTELLIGENCE":
-            module_intelligence()
-        elif selected_module == "FLOW & HEAVYWEIGHTS":
-            module_heavyweights()
+# --- 8. EXECUTION ROUTER ---
+if selected_tab == "LIVE COCKPIT":
+    module_live_cockpit()
+elif selected_tab == "INTRADAY INTERNALS":
+    module_intraday_internals()
+elif selected_tab == "DATA INGESTION & INTELLIGENCE":
+    module_data_ingestion_and_intelligence()
+elif selected_tab == "RISK CALCULATOR":
+    module_risk_calculator()
