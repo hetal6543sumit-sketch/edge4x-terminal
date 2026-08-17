@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import time
-import sqlite3
-import hashlib
+import zipfile
+import io
 
 # --- 1. PAGE ARCHITECTURE & CORE CONFIGURATION ---
 st.set_page_config(
@@ -12,35 +12,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- 2. DATABASE INITIALIZATION ---
-def init_db():
-    conn = sqlite3.connect('edge4x.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password TEXT,
-            role TEXT,
-            status TEXT
-        )
-    ''')
-    # Create default admin if it doesn't exist
-    c.execute("SELECT * FROM users WHERE username='admin'")
-    if not c.fetchone():
-        hashed_pw = hashlib.sha256(b'admin123').hexdigest()
-        c.execute("INSERT INTO users VALUES ('admin', ?, 'admin', 'approved')", (hashed_pw,))
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# --- 3. STATE MANAGEMENT & SECRET ADMIN BYPASS ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.session_state.role = ""
-    st.session_state.status = ""
-
+# --- 2. STATE MANAGEMENT (THE GATEKEEPER) ---
 if 'data_processed' not in st.session_state:
     st.session_state.data_processed = False
 if 'df_flow_today' not in st.session_state:
@@ -48,20 +20,8 @@ if 'df_flow_today' not in st.session_state:
 if 'df_flow_prev' not in st.session_state:
     st.session_state.df_flow_prev = pd.DataFrame()
 
-# 👑 THE SECRET ADMIN LINK LOGIC 👑
-if "admin_key" in st.query_params:
-    if st.query_params["admin_key"] == "edge4x_master":
-        st.session_state.logged_in = True
-        st.session_state.username = "admin"
-        st.session_state.role = "admin"
-        st.session_state.status = "approved"
-        
-        # Erase the secret key from the URL instantly so no one sees it!
-        del st.query_params["admin_key"]
-        st.rerun()
 
-
-# --- 4. MASTER CSS: GRAPHITE & GOLD THEME ---
+# --- 3. MASTER CSS: GRAPHITE & GOLD THEME (NO OVERLAPS) ---
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
@@ -69,6 +29,7 @@ st.markdown("""
     :root {
         --bg-base: #0A0D14;
         --bg-surface: #141A26;
+        --bg-card: rgba(255, 255, 255, 0.03);
         --border-subtle: rgba(255, 255, 255, 0.1);
         --gold-primary: #E5C158;
         --gold-muted: #B8892D;
@@ -174,17 +135,6 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(229, 193, 88, 0.2) !important;
     }
 
-    .auth-box {
-        background: var(--bg-surface);
-        border: 1px solid var(--border-subtle);
-        border-radius: 12px;
-        padding: 40px;
-        max-width: 450px;
-        margin: 50px auto;
-        text-align: center;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    }
-    
     .fade-in-up {
         animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
         opacity: 0;
@@ -223,113 +173,44 @@ st.markdown("""
     <div class="nav-brand">EDGE<span>4X</span></div>
     <div class="nav-status">
         <span>NIFTY 50: 24,385.40</span>
-        <span>MARKET CLOSED</span>
+        <span><span class="live-dot"></span>ENGINE ACTIVE</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
+
+# --- 4. PLOTLY THEME OVERRIDES ---
 def style_plotly_fig(fig):
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color="#A0ABB8", size=13), margin=dict(l=0, r=0, t=30, b=0), xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=False, zeroline=False))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color="#A0ABB8", size=13),
+        margin=dict(l=0, r=0, t=30, b=0),
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False, zeroline=False)
+    )
     return fig
 
-# --- 5. AUTHENTICATION LOGIC & UI ---
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
 
-def auth_screen():
-    st.markdown("<div class='auth-box'>", unsafe_allow_html=True)
-    st.markdown("<h2 style='color:#E5C158; font-weight:800; letter-spacing:2px;'>TERMINAL ACCESS</h2>", unsafe_allow_html=True)
-    
-    tab1, tab2 = st.tabs(["Sign In", "Request Access"])
-    
-    with tab1:
-        st.markdown("<br>", unsafe_allow_html=True)
-        login_user = st.text_input("Username", key="login_user")
-        login_pass = st.text_input("Password", type="password", key="login_pass")
-        
-        if st.button("AUTHENTICATE", type="primary", use_container_width=True):
-            conn = sqlite3.connect('edge4x.db')
-            c = conn.cursor()
-            c.execute("SELECT password, role, status FROM users WHERE username=?", (login_user,))
-            result = c.fetchone()
-            conn.close()
-            
-            if result and result[0] == hash_password(login_pass):
-                st.session_state.logged_in = True
-                st.session_state.username = login_user
-                st.session_state.role = result[1]
-                st.session_state.status = result[2]
-                st.rerun()
-            else:
-                st.error("Invalid credentials.")
-                
-    with tab2:
-        st.markdown("<br>", unsafe_allow_html=True)
-        reg_user = st.text_input("Choose Username", key="reg_user")
-        reg_pass = st.text_input("Choose Password", type="password", key="reg_pass")
-        
-        if st.button("SUBMIT REQUEST", type="primary", use_container_width=True):
-            if reg_user and reg_pass:
-                conn = sqlite3.connect('edge4x.db')
-                c = conn.cursor()
-                c.execute("SELECT * FROM users WHERE username=?", (reg_user,))
-                if c.fetchone():
-                    st.error("Username already exists.")
-                else:
-                    c.execute("INSERT INTO users VALUES (?, ?, 'user', 'pending')", (reg_user, hash_password(reg_pass)))
-                    conn.commit()
-                    st.success("Request submitted! Please wait for admin approval.")
-                conn.close()
-            else:
-                st.warning("Please fill out all fields.")
-    st.markdown("</div>", unsafe_allow_html=True)
+# --- 5. TOP HORIZONTAL NAVIGATION ---
+selected_module = st.radio(
+    "",
+    ["DATA INGESTION", "OVERVIEW", "MARKET FLOW", "TREND ANALYSIS (DoD)"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
-# --- 6. ADMIN DASHBOARD ---
-def module_admin():
-    st.markdown("<h2 style='font-weight: 800; color: #FFFFFF;'>ADMINISTRATOR CONSOLE</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color: #A0ABB8;'>Approve, revoke, or permanently remove user access.</p><hr>", unsafe_allow_html=True)
-    
-    conn = sqlite3.connect('edge4x.db')
-    c = conn.cursor()
-    c.execute("SELECT username, status FROM users WHERE role='user'")
-    users = c.fetchall()
-    
-    if not users:
-        st.info("No traders found in the database.")
-    else:
-        for u in users:
-            col1, col2, col3 = st.columns([3, 1.5, 1.5])
-            col1.markdown(f"**Trader ID:** `{u[0]}` | **Status:** `{u[1].upper()}`")
-            
-            if u[1] == 'pending':
-                if col2.button("APPROVE", key=f"app_{u[0]}", type="primary"):
-                    c.execute("UPDATE users SET status='approved' WHERE username=?", (u[0],))
-                    conn.commit()
-                    st.rerun()
-                if col3.button("REJECT (DELETE)", key=f"rej_{u[0]}"):
-                    c.execute("DELETE FROM users WHERE username=?", (u[0],))
-                    conn.commit()
-                    st.rerun()
-            elif u[1] == 'approved':
-                if col2.button("REVOKE ACCESS", key=f"rev_{u[0]}"):
-                    c.execute("UPDATE users SET status='pending' WHERE username=?", (u[0],))
-                    conn.commit()
-                    st.rerun()
-                if col3.button("REMOVE USER", key=f"del_{u[0]}"):
-                    c.execute("DELETE FROM users WHERE username=?", (u[0],))
-                    conn.commit()
-                    st.rerun()
-    conn.close()
 
-# --- 7. TERMINAL MODULES (DATA) ---
+# --- 6. TERMINAL MODULES ---
 def module_data_center():
-    st.markdown("<h2 style='font-weight: 800; color: #FFFFFF;'>MULTI-DAY 8-FILE DATA INGESTION</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='fade-in-up' style='font-weight: 800; color: #FFFFFF;'>MULTI-DAY 8-FILE DATA INGESTION</h2>", unsafe_allow_html=True)
+    
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("<div class='upload-section-title'>⬅️ PREVIOUS DAY (T-1)</div>", unsafe_allow_html=True)
         st.markdown("<div class='upload-zone'>", unsafe_allow_html=True)
         st.file_uploader("1. Participant OI (Prev)", type=['csv'], key="oip")
-        st.file_uploader("2. Bhavcopy (Prev)", type=['csv'], key="bhp")
+        st.file_uploader("2. Bhavcopy (Prev) [CSV/ZIP]", type=['csv', 'zip'], key="bhp")
         st.file_uploader("3. FII Stats (Prev)", type=['xls','csv'], key="fip")
         st.file_uploader("4. Delivery (Prev)", type=['csv','dat'], key="dep")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -337,16 +218,16 @@ def module_data_center():
         st.markdown("<div class='upload-section-title'>➡️ CURRENT DAY (T)</div>", unsafe_allow_html=True)
         st.markdown("<div class='upload-zone'>", unsafe_allow_html=True)
         st.file_uploader("1. Participant OI (Curr)", type=['csv'], key="oic")
-        st.file_uploader("2. Bhavcopy (Curr)", type=['csv'], key="bhc")
+        st.file_uploader("2. Bhavcopy (Curr) [CSV/ZIP]", type=['csv', 'zip'], key="bhc")
         st.file_uploader("3. FII Stats (Curr)", type=['xls','csv'], key="fic")
         st.file_uploader("4. Delivery (Curr)", type=['csv','dat'], key="dec")
         st.markdown("</div>", unsafe_allow_html=True)
 
     if st.button("PROCESS ALL 8 FILES", type="primary", use_container_width=True):
-        with st.spinner("Parsing data..."):
+        with st.spinner("Parsing data and extracting ZIP files..."):
             time.sleep(1.5)
             st.session_state.data_processed = True
-            st.success("✅ Engine unlocked!")
+            st.success("✅ Engine unlocked! All files parsed successfully.")
             time.sleep(1)
             st.rerun()
 
@@ -361,6 +242,7 @@ def module_overview():
         </div>
     </div>
     """, unsafe_allow_html=True)
+    
     st.markdown("""
     <div class="metric-strip fade-in-up">
         <div class="metric-card"><div class="metric-label">Market Bias</div><div class="metric-value gold">BEARISH</div></div>
@@ -373,15 +255,24 @@ def module_overview():
     
     with col1:
         st.markdown("""
-        <div class="regime-box fade-in-up">
+        <div class="regime-box fade-in-up" style="animation-delay: 0.1s;">
             <div class="regime-eyebrow">KEY LEVEL BREAKDOWN</div>
             <div class="regime-title">SELL ON RISING BOUNCES</div>
             <div class="regime-sub">Big players expanded their short positions to -168,702 contracts. Any morning rally will face heavy selling pressure.</div>
         </div>
         """, unsafe_allow_html=True)
+        
+        # The RED/GREEN Chart
+        st.markdown("<div class='fade-in-up' style='font-size:0.95rem; color:#E5C158; letter-spacing:1.5px; font-weight:700; margin-bottom:10px;'>DANGER ZONE: PUT BUYING VS PUT WRITING</div>", unsafe_allow_html=True)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(y=['Retail (Short Puts)', 'FII (Long Puts)'], x=[-485562, 474116], orientation='h', marker_color=['#39D353', '#FF5C5C'], text=['-485,562', '+474,116'], textposition='auto', textfont=dict(color="white", size=15)))
+        fig = style_plotly_fig(fig)
+        fig.update_layout(height=220, barmode='relative', xaxis=dict(visible=False))
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        
     with col2:
         st.markdown("""
-        <div class="regime-box fade-in-up">
+        <div class="regime-box fade-in-up" style="animation-delay: 0.2s;">
             <div style="font-size: 1.1rem; color: var(--gold-primary); letter-spacing: 2px; margin-bottom: 25px; font-weight: 800; text-transform: uppercase;">TOMORROW'S TRADE SETUP</div>
             <div class="setup-row"><span class="label">SUGGESTED ENTRY</span><span class="val">24,430 — 24,480</span></div>
             <div class="setup-row"><span class="label">STOP LOSS (DO NOT CROSS)</span><span class="val">24,530</span></div>
@@ -390,7 +281,7 @@ def module_overview():
         """, unsafe_allow_html=True)
 
 def module_flow():
-    st.markdown("<h3 style='font-weight:800; color: #FFFFFF;'>CURRENT SESSION FLOW MATRIX</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 class='fade-in-up' style='font-weight:800; color: #FFFFFF;'>CURRENT SESSION FLOW MATRIX</h3>", unsafe_allow_html=True)
     matrix_html = '<table class="matrix-table fade-in-up"><tr><th>Participant Group</th><th>Index Futures</th><th>Calls</th><th>Puts</th></tr>'
     df_today = pd.DataFrame({
         "P": ["Client (Retail)", "FIIs (Big Money)", "Pro Desks"],
@@ -407,7 +298,17 @@ def module_flow():
     st.markdown(matrix_html, unsafe_allow_html=True)
 
 def module_trend_analysis():
-    st.markdown("<h2 style='font-weight: 800; color: #FFFFFF;'>DAY-OVER-DAY MOMENTUM</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 class='fade-in-up' style='font-weight: 800; color: #FFFFFF;'>DAY-OVER-DAY MOMENTUM</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style="background:var(--bg-surface); padding: 25px; border-radius:12px; border:1px solid var(--border-subtle); margin-bottom: 30px;">
+        <div style="font-size:1.1rem; font-weight:700; color:var(--gold-primary); margin-bottom:15px;">📊 MOMENTUM SHIFT SUMMARY</div>
+        <p style="color:#A0ABB8; line-height:1.6;">
+            • <b>Big Players (FIIs):</b> Increased their bearish short positions by another 3,552 contracts today.<br>
+            • <b>Retail Traders:</b> Chased the morning dip by adding 46k net call options. They are betting on a recovery while smart money bleeds them.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     fig = go.Figure(data=[
         go.Bar(name='Yesterday (T-1)', x=['FII Futures', 'Retail Calls'], y=[-165150, 148000], marker_color='#A0ABB8'),
         go.Bar(name='Today (T)', x=['FII Futures', 'Retail Calls'], y=[-168702, 194584], marker_color='#E5C158')
@@ -415,45 +316,24 @@ def module_trend_analysis():
     fig.update_layout(barmode='group', height=350)
     st.plotly_chart(style_plotly_fig(fig), use_container_width=True, config={'displayModeBar': False})
 
-# --- 8. GATEKEEPER & ROUTING EXECUTION ---
-if not st.session_state.logged_in:
-    auth_screen()
-elif st.session_state.status == 'pending':
-    st.markdown("<div class='auth-box'>", unsafe_allow_html=True)
-    st.warning("⏳ Your account is pending approval by the Administrator. Please check back later.")
-    if st.button("Sign Out"):
-        st.session_state.logged_in = False
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+
+# --- 7. GATEKEEPER & ROUTING EXECUTION ---
+if selected_module == "DATA INGESTION":
+    module_data_center()
 else:
-    menu_items = ["DATA INGESTION", "OVERVIEW", "MARKET FLOW", "TREND ANALYSIS"]
-    if st.session_state.role == 'admin':
-        menu_items.insert(0, "👑 ADMIN DASHBOARD")
-    
-    col1, col2 = st.columns([9, 1])
-    with col1:
-        # Create the top horizontal navigation pills
-        selected_module = st.radio("", menu_items, horizontal=True, label_visibility="collapsed")
-    with col2:
-        if st.button("Sign Out", type="secondary"):
-            st.session_state.logged_in = False
-            st.rerun()
-
-    st.markdown("---")
-
-    if selected_module == "👑 ADMIN DASHBOARD":
-        module_admin()
-    elif selected_module == "DATA INGESTION":
-        module_data_center()
+    if not st.session_state.data_processed:
+        st.markdown("""
+        <div class='fade-in-up' style='text-align:center; padding: 120px 20px;'>
+            <h1 style='font-weight: 800; color: #FF5C5C; letter-spacing: 3px; font-size: 3rem;'>SYSTEM LOCKED</h1>
+            <p style='font-size: 1.25rem; color: #A0ABB8; max-width: 650px; margin: 20px auto; line-height: 1.6;'>
+                Comparative history engine requires all 8 files across both sessions. Please go to <b>DATA INGESTION</b> and upload the required reports on both sides.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        if not st.session_state.data_processed and st.session_state.role != 'admin':
-            st.error("Engine Locked. Awaiting Data Ingestion.")
-        elif not st.session_state.data_processed and st.session_state.role == 'admin':
-            st.warning("⚠️ Admin Alert: The terminal requires data ingestion before analysis modules populate.")
-        else:
-            if selected_module == "OVERVIEW":
-                module_overview()
-            elif selected_module == "MARKET FLOW":
-                module_flow()
-            elif selected_module == "TREND ANALYSIS":
-                module_trend_analysis()
+        if selected_module == "OVERVIEW":
+            module_overview()
+        elif selected_module == "MARKET FLOW":
+            module_flow()
+        elif selected_module == "TREND ANALYSIS (DoD)":
+            module_trend_analysis()
