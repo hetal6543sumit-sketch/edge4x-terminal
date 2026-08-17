@@ -174,6 +174,16 @@ st.markdown(f"""
     .setup-label {{ color: var(--text-secondary); }}
     .setup-val {{ font-weight: 700; color: var(--text-primary); }}
     
+    /* CUSTOM COMPOSITE SCORE BOX FOR VWAP */
+    .composite-box {{
+        background: rgba(255, 92, 92, 0.05); border: 1px solid var(--accent-red); 
+        border-radius: 8px; padding: 15px; text-align: center; height: 100%;
+        display: flex; flex-direction: column; justify-content: center;
+    }}
+    .composite-box.bullish {{
+        background: rgba(57, 211, 83, 0.05); border: 1px solid var(--accent-green);
+    }}
+
     /* TOOLTIP ENGINE */
     .tooltip {{
         position: relative; display: inline-block; cursor: help;
@@ -352,22 +362,14 @@ def get_real_market_breadth():
 # --- NEW: REAL SECTORAL RELATIVE STRENGTH FETCH (EXPANDED) ---
 @st.cache_data(ttl=60)
 def get_real_sectoral_data():
-    # 14 Full NSE Sectoral Indices
     sectors = {
-        "NIFTY 50 (Benchmark)": "^NSEI",
-        "NIFTY BANK": "^NSEBANK",
-        "NIFTY FIN SERVICE": "^CNXFIN",
-        "NIFTY IT": "^CNXIT",
-        "NIFTY AUTO": "^CNXAUTO",
-        "NIFTY ENERGY": "^CNXENERGY",
-        "NIFTY FMCG": "^CNXFMCG",
-        "NIFTY PHARMA": "^CNXPHARMA",
-        "NIFTY METAL": "^CNXMETAL",
-        "NIFTY REALTY": "^CNXREALTY",
-        "NIFTY MEDIA": "^CNXMEDIA",
-        "NIFTY INFRA": "^CNXINFRA",
-        "NIFTY PSU BANK": "^CNXPSUBANK",
-        "NIFTY CONSUMPTION": "^CNXCONSUM"
+        "NIFTY 50 (Benchmark)": "^NSEI", "NIFTY BANK": "^NSEBANK",
+        "NIFTY FIN SERVICE": "^CNXFIN", "NIFTY IT": "^CNXIT",
+        "NIFTY AUTO": "^CNXAUTO", "NIFTY ENERGY": "^CNXENERGY",
+        "NIFTY FMCG": "^CNXFMCG", "NIFTY PHARMA": "^CNXPHARMA",
+        "NIFTY METAL": "^CNXMETAL", "NIFTY REALTY": "^CNXREALTY",
+        "NIFTY MEDIA": "^CNXMEDIA", "NIFTY INFRA": "^CNXINFRA",
+        "NIFTY PSU BANK": "^CNXPSUBANK", "NIFTY CONSUMPTION": "^CNXCONSUM"
     }
     results = []
     for name, sym in sectors.items():
@@ -378,18 +380,62 @@ def get_real_sectoral_data():
                 prev_close = hist['Close'].iloc[-2]
                 curr_price = hist['Close'].iloc[-1]
                 pct_change = ((curr_price - prev_close) / prev_close) * 100
-                
                 state = "STRONG LONG" if pct_change > 0.5 else "WEAK LONG" if pct_change > 0 else "WEAK SHORT" if pct_change > -0.5 else "STRONG SHORT"
-                
-                results.append({
-                    "Sector": name,
-                    "Price": curr_price,
-                    "Change": pct_change,
-                    "State": state
-                })
+                results.append({"Sector": name, "Price": curr_price, "Change": pct_change, "State": state})
         except:
             pass
     return pd.DataFrame(results) if results else None
+
+# --- NEW: REAL ALGORITHMIC VWAP ENGINE FOR TOP 5 HEAVYWEIGHTS ---
+@st.cache_data(ttl=60)
+def get_real_heavyweight_vwap():
+    heavyweights = {
+        "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 11.03},
+        "RELIANCE.NS": {"name": "Reliance Ind.", "weight": 9.23},
+        "ICICIBANK.NS": {"name": "ICICI Bank", "weight": 7.75},
+        "INFY.NS": {"name": "Infosys", "weight": 6.12},
+        "TCS.NS": {"name": "TCS", "weight": 4.03}
+    }
+    data = []
+    composite_score = 0.0
+
+    for sym, meta in heavyweights.items():
+        try:
+            ticker = yf.Ticker(sym)
+            df = ticker.history(period="1d", interval="1m")
+            
+            if not df.empty:
+                current_price = df['Close'].iloc[-1]
+                
+                df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
+                df['Volume_Price'] = df['Typical_Price'] * df['Volume']
+                cumulative_vp = df['Volume_Price'].sum()
+                cumulative_vol = df['Volume'].sum()
+                
+                vwap = cumulative_vp / cumulative_vol if cumulative_vol > 0 else current_price
+                divergence_pct = ((current_price - vwap) / vwap) * 100
+                
+                composite_score += (divergence_pct * (meta["weight"] / 100))
+                state = "ALGO BUYING (ACCUMULATION)" if divergence_pct > 0 else "ALGO SELLING (DISTRIBUTION)"
+                
+                data.append({
+                    "Symbol": meta["name"], "Weight": f"{meta['weight']}%",
+                    "Price": current_price, "VWAP": vwap,
+                    "Divergence": divergence_pct, "State": state
+                })
+            else:
+                data.append({
+                    "Symbol": meta["name"], "Weight": f"{meta['weight']}%",
+                    "Price": 0.0, "VWAP": 0.0, "Divergence": 0.0, "State": "AWAITING MARKET OPEN"
+                })
+        except Exception:
+            data.append({
+                "Symbol": meta["name"], "Weight": f"{meta['weight']}%",
+                "Price": 0.0, "VWAP": 0.0, "Divergence": 0.0, "State": "DATA UNAVAILABLE"
+            })
+            
+    return pd.DataFrame(data), composite_score
+
 
 @st.fragment(run_every="60s")
 def render_live_ticker():
@@ -674,7 +720,7 @@ def module_live_cockpit():
             """, unsafe_allow_html=True)
 
 
-# >>> MODULE 2: NEW! INTRADAY INTERNALS <<<
+# >>> MODULE 2: INTRADAY INTERNALS <<<
 def module_intraday_internals():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>LIVE INTRADAY INTERNALS: BREADTH & SECTOR ROTATION</h2>", unsafe_allow_html=True)
     
@@ -785,6 +831,68 @@ def module_intraday_internals():
             </div>
             </div>
             """, unsafe_allow_html=True)
+
+    # 3. Algorithmic VWAP Heavyweight Screener
+    st.markdown("<div class='section-header fade-in' style='margin-top: 40px;'>INSTITUTIONAL ALGORITHMIC SCREENER</div>", unsafe_allow_html=True)
+
+    df_vwap, composite_score = get_real_heavyweight_vwap()
+    
+    col3, col4 = st.columns([2.5, 1])
+    with col3:
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height:100%;">
+            <div class="panel-header">
+                ALGORITHMIC VWAP DIVERGENCE (The Elephant Footprint Tracker)
+                <span class="tooltip">ⓘ<span class="tooltiptext">Calculates live 1-minute VWAP for the Top 5 Index Heavyweights. Shows if algorithmic block-orders are buying or selling heavily weighted stocks.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        table_html = f'''
+        <table class="data-table">
+            <tr>
+                <th>Symbol</th>
+                <th>Weightage</th>
+                <th>LTP</th>
+                <th>Intraday VWAP</th>
+                <th>VWAP Divergence <span class="tooltip">ⓘ<span class="tooltiptext">If Price is below VWAP (Red), institutions are distributing. If Price is above VWAP (Green), they are accumulating.</span></span></th>
+                <th>Algorithmic State</th>
+            </tr>
+        '''
+        for _, r in df_vwap.iterrows():
+            div = r["Divergence"]
+            if r["State"] in ["AWAITING MARKET OPEN", "DATA UNAVAILABLE"]:
+                table_html += f"<tr><td><b>{r['Symbol']}</b></td><td>{r['Weight']}</td><td>--</td><td>--</td><td>--</td><td><span style='color:var(--text-muted);'>{r['State']}</span></td></tr>"
+            else:
+                c_style = "color: var(--accent-green);" if div > 0 else "color: var(--accent-red);" if div < 0 else ""
+                indicator = "🟢" if div > 0 else "🔴" if div < 0 else "⚪"
+                table_html += f"<tr><td><b>{r['Symbol']}</b></td><td>{r['Weight']}</td><td>₹{r['Price']:,.2f}</td><td>₹{r['VWAP']:,.2f}</td><td style='{c_style}; font-weight:600;'>{div:+.3f}%</td><td>{indicator} {r['State']}</td></tr>"
+        
+        table_html += "</table></div>"
+        st.markdown(table_html, unsafe_allow_html=True)
+
+    with col4:
+        if df_vwap.iloc[0]["State"] in ["AWAITING MARKET OPEN", "DATA UNAVAILABLE"]:
+            box_class = ""
+            text_color = "var(--text-secondary)"
+            bias_text = "AWAITING TICK DATA"
+        else:
+            box_class = "bullish" if composite_score > 0 else ""
+            text_color = "var(--accent-green)" if composite_score > 0 else "var(--accent-red)"
+            bias_text = "HEAVYWEIGHT ACCUMULATION" if composite_score > 0 else "DISTRIBUTION DRAG"
+        
+        st.markdown(f"""
+        <div class="fade-in composite-box {box_class}" style="height:100%;">
+            <div style="font-size: 0.8rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 5px;">
+                Composite Algorithmic Pull
+                <span class="tooltip">ⓘ<span class="tooltiptext">Aggregates the total VWAP deviation based on index weightages. Reveals the true underlying force moving the Nifty.</span></span>
+            </div>
+            <div style="font-size: 2.2rem; font-weight: 800; color: {text_color};">{composite_score:+.3f}%</div>
+            <div style="font-size: 0.9rem; color: {text_color}; margin-top: 5px; font-weight: 600;">{bias_text}</div>
+            <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 15px; line-height: 1.5;">
+                ⚡ <b>EDGE:</b> If Nifty is making a new high, but this score is deeply red, it is a false breakout. The heaviest stocks are actually being sold off by algorithms.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 
 # >>> MODULE 3: DATA INGESTION & INTELLIGENCE <<<
