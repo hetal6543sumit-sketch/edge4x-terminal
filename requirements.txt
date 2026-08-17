@@ -2,6 +2,8 @@ streamlit>=1.37.0
 pandas
 plotly
 yfinance
-smartapi-python
+smartapi-python==1.4.8
 pyotp
 logzero
+websocket-client
+requests
