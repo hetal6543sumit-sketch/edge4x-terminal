@@ -8,13 +8,13 @@ import io
 import yfinance as yf
 import pyotp
 
-# Fallback-safe import for SmartApi
+# Fallback-safe import for Angel One SmartApi
 try:
     from SmartApi import SmartConnect
 except ImportError:
     SmartConnect = None
 
-# --- 1. PAGE ARCHITECTURE ---
+# --- 1. PAGE ARCHITECTURE & INITIAL CONFIGURATION ---
 st.set_page_config(
     page_title="EDGE4X | Institutional Terminal", 
     layout="wide", 
@@ -33,39 +33,49 @@ if 'smart_money_score' not in st.session_state:
 if 'market_regime' not in st.session_state:
     st.session_state.market_regime = "BEARISH / SELL ON RISE"
 
-# --- 3. ANGEL ONE SECURE API CONNECTION ---
+
+# --- 3. LIVE ANGEL ONE API CONNECTION WITH DIAGNOSTICS ---
 @st.cache_resource(ttl=3600)
 def connect_angel_one():
     if SmartConnect is None:
-        return None
+        return None, "SmartApi library not installed locally"
     try:
-        if "angel_one" in st.secrets:
-            api_key = st.secrets["angel_one"]["api_key"]
-            client_id = st.secrets["angel_one"]["client_id"]
-            mpin = st.secrets["angel_one"]["mpin"]
-            totp_secret = st.secrets["angel_one"]["totp_secret"]
-
-            smart_obj = SmartConnect(api_key=api_key)
-            totp = pyotp.TOTP(totp_secret).now()
-            session_data = smart_obj.generateSession(client_id, mpin, totp)
+        if "angel_one" not in st.secrets:
+            return None, "Secrets not configured in secrets.toml"
             
-            if session_data.get('status') is True:
-                return smart_obj
-        return None
-    except Exception:
-        return None
+        api_key = st.secrets["angel_one"]["api_key"]
+        client_id = st.secrets["angel_one"]["client_id"]
+        mpin = st.secrets["angel_one"]["mpin"]
+        totp_secret = st.secrets["angel_one"]["totp_secret"]
 
-angel_api = connect_angel_one()
+        # Validate that credentials are not default placeholders
+        if "YOUR_" in api_key or "YOUR_" in client_id:
+            return None, "Default placeholder keys detected"
+
+        smart_obj = SmartConnect(api_key=api_key)
+        totp = pyotp.TOTP(totp_secret).now()
+        session_data = smart_obj.generateSession(client_id, mpin, totp)
+        
+        if session_data.get('status') is True:
+            return smart_obj, "Connected"
+        else:
+            msg = session_data.get('message', 'Login rejected by Angel One')
+            return None, msg
+    except Exception as e:
+        return None, str(e)
+
+# Run authentication handshake
+angel_api, connection_message = connect_angel_one()
 
 if angel_api:
     api_status_text = "API CONNECTED"
     api_status_color = "#39D353"
 else:
-    api_status_text = "API DISCONNECTED"
+    api_status_text = f"API DISCONNECTED ({connection_message})"
     api_status_color = "#FF5C5C"
 
 
-# --- 4. MASTER CSS: GRAPHITE & CHAMPAGNE-GOLD ---
+# --- 4. MASTER CSS: GRAPHITE & CHAMPAGNE-GOLD THEME ---
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -109,7 +119,7 @@ st.markdown(f"""
     }}
     .nav-brand {{ font-weight: 800; letter-spacing: 2.5px; color: var(--text-primary); font-size: 1.3rem; }}
     .nav-brand span {{ color: var(--gold-primary); }}
-    .nav-status {{ font-size: 0.85rem; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 8px; }}
+    .nav-status {{ font-size: 0.8rem; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 8px; }}
     .live-dot {{ height: 7px; width: 7px; background-color: {api_status_color}; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px {api_status_color}; }}
 
     /* FIXED LIVE MARKET TICKER */
@@ -272,11 +282,10 @@ def style_plotly_fig(fig):
     return fig
 
 
-# --- 6. PARSER BACKEND LOGIC ---
+# --- 6. 8-FILE PARSER BACKEND LOGIC ---
 def parse_participant_csv(file):
     try:
         df = pd.read_csv(file)
-        # Look for FII row
         fii_row = df[df.iloc[:, 0].astype(str).str.contains('FII', case=False, na=False)]
         if not fii_row.empty:
             long_fut = fii_row.iloc[0, 1]
@@ -295,11 +304,9 @@ def process_uploaded_files(oip, bhp, fip, dep, oic, bhc, fic, dec):
         if net_prev is not None:
             st.session_state.fii_dod_delta = int(net_curr - net_prev)
     else:
-        # Realistic fallback numbers if testing with blank files
         st.session_state.fii_net_futures = -168702
         st.session_state.fii_dod_delta = -3552
 
-    # Update Smart Money Score based on parsed short exposure
     if st.session_state.fii_net_futures < -100000:
         st.session_state.smart_money_score = -6.5
         st.session_state.market_regime = "BEARISH / SELL ON RISE"
@@ -322,7 +329,7 @@ selected_module = st.radio(
 )
 
 
-# --- 8. MODULES ---
+# --- 8. MODULE RENDERING ---
 
 def module_home():
     st.markdown("""
