@@ -3,18 +3,16 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
-import zipfile
-import io
 import yfinance as yf
 import pyotp
 
-# Fallback-safe import for Angel One SmartApi
+# --- ANGEL ONE IMPORT (WITH FAILSAFE) ---
 try:
     from SmartApi import SmartConnect
 except ImportError:
     SmartConnect = None
 
-# --- 1. PAGE ARCHITECTURE & INITIAL CONFIGURATION ---
+# --- 1. PAGE ARCHITECTURE ---
 st.set_page_config(
     page_title="EDGE4X | Institutional Terminal", 
     layout="wide", 
@@ -34,23 +32,22 @@ if 'market_regime' not in st.session_state:
     st.session_state.market_regime = "BEARISH / SELL ON RISE"
 
 
-# --- 3. LIVE ANGEL ONE API CONNECTION WITH DIAGNOSTICS ---
+# --- 3. ANGEL ONE LIVE API CONNECTION (DIAGNOSTIC ENGINE) ---
 @st.cache_resource(ttl=3600)
 def connect_angel_one():
     if SmartConnect is None:
-        return None, "SmartApi library not installed locally"
+        return None, "SmartApi library not installed locally. Check requirements.txt."
     try:
         if "angel_one" not in st.secrets:
-            return None, "Secrets not configured in secrets.toml"
+            return None, "Secrets not configured in Streamlit Cloud Settings."
             
         api_key = st.secrets["angel_one"]["api_key"]
         client_id = st.secrets["angel_one"]["client_id"]
         mpin = st.secrets["angel_one"]["mpin"]
         totp_secret = st.secrets["angel_one"]["totp_secret"]
 
-        # Validate that credentials are not default placeholders
         if "YOUR_" in api_key or "YOUR_" in client_id:
-            return None, "Default placeholder keys detected"
+            return None, "Default placeholder keys detected. Please enter real keys."
 
         smart_obj = SmartConnect(api_key=api_key)
         totp = pyotp.TOTP(totp_secret).now()
@@ -64,7 +61,6 @@ def connect_angel_one():
     except Exception as e:
         return None, str(e)
 
-# Run authentication handshake
 angel_api, connection_message = connect_angel_one()
 
 if angel_api:
@@ -75,7 +71,7 @@ else:
     api_status_color = "#FF5C5C"
 
 
-# --- 4. MASTER CSS: GRAPHITE & CHAMPAGNE-GOLD THEME ---
+# --- 4. MASTER CSS: GRAPHITE & CHAMPAGNE-GOLD ---
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -186,14 +182,10 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# --- 5. REAL-TIME DATA FEEDS (LIVE TICKER & HEAVYWEIGHTS) ---
+# --- 5. REAL-TIME DATA FEEDS (BACKUP API) ---
 @st.cache_data(ttl=60)
 def get_live_prices():
-    symbols = {
-        "NIFTY 50": "^NSEI",
-        "BANK NIFTY": "^NSEBANK",
-        "INDIA VIX": "^INDIAVIX"
-    }
+    symbols = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "INDIA VIX": "^INDIAVIX"}
     results = {}
     for name, sym in symbols.items():
         try:
@@ -236,10 +228,8 @@ def get_heavyweight_quotes():
                 raise ValueError
         except Exception:
             mock_vals = {
-                "HDFCBANK.NS": (1642.50, -0.45, 12400000),
-                "RELIANCE.NS": (2980.10, -0.82, 8500000),
-                "ICICIBANK.NS": (1180.30, 0.20, 9200000),
-                "INFY.NS": (1850.40, -0.15, 4100000),
+                "HDFCBANK.NS": (1642.50, -0.45, 12400000), "RELIANCE.NS": (2980.10, -0.82, 8500000),
+                "ICICIBANK.NS": (1180.30, 0.20, 9200000), "INFY.NS": (1850.40, -0.15, 4100000),
                 "TCS.NS": (4210.00, 0.05, 1800000)
             }
             c_price, chg_pct, vol = mock_vals[sym]
@@ -248,11 +238,8 @@ def get_heavyweight_quotes():
         total_weighted_pull += pull_score
 
         data.append({
-            "Symbol": meta["name"],
-            "Weight": f"{meta['weight']}%",
-            "Price": f"₹{c_price:,.2f}",
-            "Change %": chg_pct,
-            "Volume": f"{vol/100000:.1f}L",
+            "Symbol": meta["name"], "Weight": f"{meta['weight']}%", "Price": f"₹{c_price:,.2f}",
+            "Change %": chg_pct, "Volume": f"{vol/100000:.1f}L",
             "State": "DISTRIBUTION" if chg_pct < -0.3 else "ACCUMULATION" if chg_pct > 0.3 else "NEUTRAL"
         })
         
@@ -268,8 +255,7 @@ def render_live_ticker():
         items_html += f'<span class="ticker-item">{name}: {vals["price"]:,.2f} <span class="{color_class}">{arrow} {pct:+.2f}%</span></span>'
         
     items_html += f'<span class="ticker-item">SMART MONEY SCORE: {st.session_state.smart_money_score} <span class="t-dn">▼ BEARISH</span></span>'
-    full_items_html = items_html * 3
-    st.markdown(f'<div class="ticker-wrap"><div class="ticker">{full_items_html}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="ticker-wrap"><div class="ticker">{items_html * 3}</div></div>', unsafe_allow_html=True)
 
 render_live_ticker()
 
@@ -288,9 +274,7 @@ def parse_participant_csv(file):
         df = pd.read_csv(file)
         fii_row = df[df.iloc[:, 0].astype(str).str.contains('FII', case=False, na=False)]
         if not fii_row.empty:
-            long_fut = fii_row.iloc[0, 1]
-            short_fut = fii_row.iloc[0, 2]
-            return float(long_fut) - float(short_fut)
+            return float(fii_row.iloc[0, 1]) - float(fii_row.iloc[0, 2])
     except Exception:
         pass
     return None
@@ -330,7 +314,6 @@ selected_module = st.radio(
 
 
 # --- 8. MODULE RENDERING ---
-
 def module_home():
     st.markdown("""
     <div style="text-align: center; padding: 30px 0 50px 0;" class="fade-in">
@@ -345,33 +328,15 @@ def module_home():
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(f"""
-        <div class='panel-box fade-in'>
-            <div class='panel-header'>MARKET REGIME</div>
-            <div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.market_regime}</div>
-            <div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Institutional Short Pressure: HIGH</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"<div class='panel-box fade-in'><div class='panel-header'>MARKET REGIME</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.market_regime}</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Institutional Short Pressure: HIGH</div></div>", unsafe_allow_html=True)
     with col2:
-        st.markdown(f"""
-        <div class='panel-box fade-in'>
-            <div class='panel-header'>SMART MONEY SCORE</div>
-            <div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.smart_money_score} / 10</div>
-            <div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Net FII Futures: {st.session_state.fii_net_futures:,.0f} contracts</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"<div class='panel-box fade-in'><div class='panel-header'>SMART MONEY SCORE</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>{st.session_state.smart_money_score} / 10</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Net FII Futures: {st.session_state.fii_net_futures:,.0f} contracts</div></div>", unsafe_allow_html=True)
     with col3:
-        st.markdown("""
-        <div class='panel-box fade-in'>
-            <div class='panel-header'>HEAVYWEIGHT COMPOSITE PULL</div>
-            <div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>-0.34% (DRAG)</div>
-            <div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Reliance & HDFC Bank below VWAP</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown("<div class='panel-box fade-in'><div class='panel-header'>HEAVYWEIGHT COMPOSITE PULL</div><div style='font-size:1.8rem; font-weight:800; color:var(--accent-red);'>-0.34% (DRAG)</div><div style='color:var(--text-secondary); margin-top:8px; font-size:0.9rem;'>Reliance & HDFC Bank below VWAP</div></div>", unsafe_allow_html=True)
 
 def module_data_center():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 15px;'>8-FILE INSTITUTIONAL INGESTION BACKEND</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color:var(--text-secondary); margin-bottom:25px;'>Upload your T-1 (Previous) and T (Current) reports. The parser automatically extracts ZIP archives and compiles net flow deltas.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='color:var(--text-secondary); margin-bottom:25px;'>Upload your T-1 (Previous) and T (Current) reports.</p>", unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
@@ -422,27 +387,16 @@ def module_intelligence():
         </div>
         """, unsafe_allow_html=True)
         
-        # STRIKE-BY-STRIKE OPTION WALL
         st.markdown("<div class='panel-header fade-in'>STRIKE-BY-STRIKE OPTION WALL (OPEN INTEREST PROFILE)</div>", unsafe_allow_html=True)
         strikes = [24100, 24200, 24300, 24400, 24500, 24600, 24700]
         call_oi = [42000, 58000, 94000, 142000, 218000, 185000, 260000]
         put_oi  = [240000, 195000, 168000, 115000, 62000, 31000, 18000]
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(
-            y=strikes, x=[-p for p in put_oi], orientation='h',
-            name='Put OI (Support)', marker_color='#39D353'
-        ))
-        fig.add_trace(go.Bar(
-            y=strikes, x=call_oi, orientation='h',
-            name='Call OI (Resistance)', marker_color='#FF5C5C'
-        ))
+        fig.add_trace(go.Bar(y=strikes, x=[-p for p in put_oi], orientation='h', name='Put OI (Support)', marker_color='#39D353'))
+        fig.add_trace(go.Bar(y=strikes, x=call_oi, orientation='h', name='Call OI (Resistance)', marker_color='#FF5C5C'))
         fig = style_plotly_fig(fig)
-        fig.update_layout(
-            barmode='relative', height=240,
-            xaxis=dict(title="Contracts (Puts ← | → Calls)", showgrid=False, zeroline=True, zerolinecolor="rgba(255,255,255,0.1)"),
-            yaxis=dict(type='category'), legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center")
-        )
+        fig.update_layout(barmode='relative', height=240, xaxis=dict(title="Contracts (Puts ← | → Calls)", showgrid=False, zeroline=True, zerolinecolor="rgba(255,255,255,0.1)"), yaxis=dict(type='category'), legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center"))
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
         
     with col2:
@@ -509,19 +463,14 @@ def module_heavyweights():
 
 def module_calculator():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 15px;'>PRECISION RISK & POSITION SIZING CALCULATOR</h2>", unsafe_allow_html=True)
-    st.markdown("<p style='color:var(--text-secondary); margin-bottom:25px;'>Calculate your exact lot allocation and maximum rupee downside based on live institutional invalidation boundaries.</p>", unsafe_allow_html=True)
     
     col1, col2 = st.columns([1, 1.2])
     with col1:
-        st.markdown("<div class='panel-box fade-in'>", unsafe_allow_html=True)
-        st.markdown("<div class='panel-header'>TRADE PARAMETERS</div>", unsafe_allow_html=True)
-        
+        st.markdown("<div class='panel-box fade-in'><div class='panel-header'>TRADE PARAMETERS</div>", unsafe_allow_html=True)
         capital = st.number_input("Account Capital (₹)", value=500000, step=25000)
         risk_pct = st.slider("Risk Tolerance (% of Capital)", min_value=0.5, max_value=3.0, value=1.0, step=0.25)
-        
         instrument = st.selectbox("Instrument", ["NIFTY 50 (Lot: 25)", "BANK NIFTY (Lot: 15)"])
         lot_size = 25 if "NIFTY 50" in instrument else 15
-        
         entry_price = st.number_input("Option Entry Premium (₹)", value=120.0, step=5.0)
         sl_price = st.number_input("Option Stop Loss (₹)", value=95.0, step=5.0)
         target_price = st.number_input("Option Target (₹)", value=180.0, step=5.0)
@@ -539,8 +488,7 @@ def module_calculator():
         actual_rupee_loss = actual_quantity * risk_per_unit
         expected_profit = actual_quantity * reward_per_unit
         
-        st.markdown("<div class='panel-box fade-in'>", unsafe_allow_html=True)
-        st.markdown("<div class='panel-header'>INSTITUTIONAL ALLOCATION MATRIX</div>", unsafe_allow_html=True)
+        st.markdown("<div class='panel-box fade-in'><div class='panel-header'>INSTITUTIONAL ALLOCATION MATRIX</div>", unsafe_allow_html=True)
         st.markdown(f"""
         <div class="setup-row"><span class="setup-label">Max Allowed Risk (₹)</span><span class="setup-val">₹{max_rupee_loss:,.2f} ({risk_pct}%)</span></div>
         <div class="setup-row"><span class="setup-label">Recommended Lot Size</span><span class="setup-val" style="color:var(--gold-primary); font-size:1.2rem;">{total_lots} Lots ({actual_quantity} Qty)</span></div>
@@ -548,8 +496,8 @@ def module_calculator():
         <div class="setup-row"><span class="setup-label">Loss at Invalidation (SL)</span><span class="setup-val" style="color:var(--accent-red);">-₹{actual_rupee_loss:,.2f}</span></div>
         <div class="setup-row"><span class="setup-label">Target Profit (Reward)</span><span class="setup-val" style="color:var(--accent-green);">+₹{expected_profit:,.2f}</span></div>
         <div class="setup-row"><span class="setup-label">Risk-to-Reward Ratio</span><span class="setup-val">1 : {rr_ratio:.2f}</span></div>
+        </div>
         """, unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # --- 9. GATEKEEPER ROUTING EXECUTION ---
