@@ -99,6 +99,17 @@ st.markdown(f"""
         font-size: 15px; 
     }}
 
+    /* KILL STREAMLIT STALE DIMMING COMPLETELY */
+    *[data-stale="true"] {{
+        opacity: 1 !important;
+        filter: none !important;
+        transition: none !important;
+        pointer-events: auto !important;
+    }}
+    .stSpinner {{
+        display: none !important;
+    }}
+
     [data-testid="stSidebar"] {{ display: none !important; }}
     #MainMenu, header, footer {{ visibility: hidden; }}
     
@@ -280,7 +291,6 @@ def get_yfinance_breadth_fallback():
         pass
     return None
 
-# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
 @st.cache_data(ttl=15, show_spinner=False)
 def get_live_ticker_feed():
     results = {}
@@ -319,7 +329,6 @@ def get_live_ticker_feed():
 def norm_pdf(x):
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
-# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
 @st.cache_data(ttl=30, show_spinner=False)
 def get_real_option_chain_data():
     url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
@@ -389,7 +398,6 @@ def get_real_option_chain_data():
     except Exception:
         return None
 
-# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
 @st.cache_data(ttl=30, show_spinner=False)
 def get_real_market_breadth():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
@@ -405,7 +413,6 @@ def get_real_market_breadth():
             }
     return get_yfinance_breadth_fallback()
 
-# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
 @st.cache_data(ttl=30, show_spinner=False)
 def get_real_sectoral_data():
     sectors = {
@@ -432,7 +439,6 @@ def get_real_sectoral_data():
             pass
     return pd.DataFrame(results) if results else None
 
-# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
 @st.cache_data(ttl=30, show_spinner=False)
 def get_real_heavyweight_vwap():
     heavyweights = {
