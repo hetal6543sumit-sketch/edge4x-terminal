@@ -37,7 +37,7 @@ if 'participant_matrix' not in st.session_state:
     st.session_state.participant_matrix = None
 
 # --- 3. LIVE BROKER API AUTHENTICATION ---
-@st.cache_resource(ttl=3600)
+@st.cache_resource(ttl=3600, show_spinner=False)
 def connect_angel_one():
     if SmartConnect is None:
         return None, "SmartApi library not installed locally"
@@ -280,8 +280,8 @@ def get_yfinance_breadth_fallback():
         pass
     return None
 
-# LOWERED CACHE TTL TO 15 SECONDS FOR MAXIMUM SPEED
-@st.cache_data(ttl=15)
+# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
+@st.cache_data(ttl=15, show_spinner=False)
 def get_live_ticker_feed():
     results = {}
     if angel_api:
@@ -319,8 +319,8 @@ def get_live_ticker_feed():
 def norm_pdf(x):
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
-# LOWERED CACHE TTL TO 30 SECONDS (Safest minimum for NSE)
-@st.cache_data(ttl=30)
+# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
+@st.cache_data(ttl=30, show_spinner=False)
 def get_real_option_chain_data():
     url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
     data = fetch_nse_json(url)
@@ -389,8 +389,8 @@ def get_real_option_chain_data():
     except Exception:
         return None
 
-# LOWERED CACHE TTL TO 30 SECONDS
-@st.cache_data(ttl=30)
+# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
+@st.cache_data(ttl=30, show_spinner=False)
 def get_real_market_breadth():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
     data = fetch_nse_json(url)
@@ -405,8 +405,8 @@ def get_real_market_breadth():
             }
     return get_yfinance_breadth_fallback()
 
-# LOWERED CACHE TTL TO 30 SECONDS
-@st.cache_data(ttl=30)
+# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
+@st.cache_data(ttl=30, show_spinner=False)
 def get_real_sectoral_data():
     sectors = {
         "NIFTY 50 (Benchmark)": "^NSEI", "NIFTY BANK": "^NSEBANK",
@@ -432,8 +432,8 @@ def get_real_sectoral_data():
             pass
     return pd.DataFrame(results) if results else None
 
-# LOWERED CACHE TTL TO 30 SECONDS
-@st.cache_data(ttl=30)
+# SHOW_SPINNER=FALSE ADDED TO SILENCE THE BACKGROUND REFRESH
+@st.cache_data(ttl=30, show_spinner=False)
 def get_real_heavyweight_vwap():
     heavyweights = {
         "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 11.03},
@@ -476,7 +476,7 @@ def get_real_heavyweight_vwap():
             
     return pd.DataFrame(data), composite_score
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_premarket_macro_data():
     symbols = {
         "DXY": "DX-Y.NYB", "US10Y": "^TNX", "BRENT": "BZ=F",
