@@ -228,15 +228,19 @@ def fetch_nse_json(api_url):
         try:
             session = requests.Session()
             session.headers.update(headers)
-            session.get("https://www.nseindia.com", timeout=5)
-            time.sleep(1.0)
             
+            # Step 1: Hit homepage to warm up cookies
+            session.get("https://www.nseindia.com", timeout=5)
+            time.sleep(1.0) # Simulate human load time
+            
+            # Step 2: Set Referer and request the actual API
             session.headers.update({"Referer": "https://www.nseindia.com/"})
             res = session.get(api_url, timeout=5)
             
             if res.status_code == 200:
                 return res.json()
                 
+            # Step 3: If blocked, try secondary Option Chain route to get deeper cookies
             if res.status_code in [401, 403]:
                 session.get("https://www.nseindia.com/option-chain", timeout=5)
                 time.sleep(1.0)
@@ -276,6 +280,8 @@ def get_yfinance_breadth_fallback():
         pass
     return None
 
+# LOWERED CACHE TTL TO 15 SECONDS FOR MAXIMUM SPEED
+@st.cache_data(ttl=15)
 def get_live_ticker_feed():
     results = {}
     if angel_api:
@@ -310,33 +316,11 @@ def get_live_ticker_feed():
             if name not in results: results[name] = {"price": 0.0, "pct_change": 0.0}
     return results
 
-@st.cache_data(ttl=300)
-def get_premarket_macro_data():
-    symbols = {
-        "DXY": "DX-Y.NYB", "US10Y": "^TNX", "BRENT": "BZ=F",
-        "HDFC_ADR": "HDB", "ICICI_ADR": "IBN", "INFY_ADR": "INFY",
-        "WIPRO_ADR": "WIT", "DRREDDY_ADR": "RDY"
-    }
-    macro_data = {}
-    for name, sym in symbols.items():
-        try:
-            ticker = yf.Ticker(sym)
-            hist = ticker.history(period="5d")
-            if len(hist) >= 2:
-                prev_close = hist['Close'].iloc[-2]
-                curr = hist['Close'].iloc[-1]
-                pct = ((curr - prev_close) / prev_close) * 100
-                macro_data[name] = {"price": curr, "change": pct}
-            else:
-                macro_data[name] = {"price": 0.0, "change": 0.0}
-        except:
-            macro_data[name] = {"price": 0.0, "change": 0.0}
-    return macro_data
-
 def norm_pdf(x):
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
 
-@st.cache_data(ttl=60)
+# LOWERED CACHE TTL TO 30 SECONDS (Safest minimum for NSE)
+@st.cache_data(ttl=30)
 def get_real_option_chain_data():
     url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
     data = fetch_nse_json(url)
@@ -405,7 +389,8 @@ def get_real_option_chain_data():
     except Exception:
         return None
 
-@st.cache_data(ttl=60)
+# LOWERED CACHE TTL TO 30 SECONDS
+@st.cache_data(ttl=30)
 def get_real_market_breadth():
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
     data = fetch_nse_json(url)
@@ -420,7 +405,8 @@ def get_real_market_breadth():
             }
     return get_yfinance_breadth_fallback()
 
-@st.cache_data(ttl=60)
+# LOWERED CACHE TTL TO 30 SECONDS
+@st.cache_data(ttl=30)
 def get_real_sectoral_data():
     sectors = {
         "NIFTY 50 (Benchmark)": "^NSEI", "NIFTY BANK": "^NSEBANK",
@@ -446,7 +432,8 @@ def get_real_sectoral_data():
             pass
     return pd.DataFrame(results) if results else None
 
-@st.cache_data(ttl=60)
+# LOWERED CACHE TTL TO 30 SECONDS
+@st.cache_data(ttl=30)
 def get_real_heavyweight_vwap():
     heavyweights = {
         "HDFCBANK.NS": {"name": "HDFC Bank", "weight": 11.03},
@@ -489,8 +476,31 @@ def get_real_heavyweight_vwap():
             
     return pd.DataFrame(data), composite_score
 
+@st.cache_data(ttl=300)
+def get_premarket_macro_data():
+    symbols = {
+        "DXY": "DX-Y.NYB", "US10Y": "^TNX", "BRENT": "BZ=F",
+        "HDFC_ADR": "HDB", "ICICI_ADR": "IBN", "INFY_ADR": "INFY",
+        "WIPRO_ADR": "WIT", "DRREDDY_ADR": "RDY"
+    }
+    macro_data = {}
+    for name, sym in symbols.items():
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="5d")
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                curr = hist['Close'].iloc[-1]
+                pct = ((curr - prev_close) / prev_close) * 100
+                macro_data[name] = {"price": curr, "change": pct}
+            else:
+                macro_data[name] = {"price": 0.0, "change": 0.0}
+        except:
+            macro_data[name] = {"price": 0.0, "change": 0.0}
+    return macro_data
 
-@st.fragment(run_every="60s")
+# FASTER AUTO-REFRESH (15 Seconds)
+@st.fragment(run_every="15s")
 def render_live_ticker():
     data = get_live_ticker_feed()
     items_html = ""
@@ -523,9 +533,10 @@ selected_tab = st.radio(
 )
 
 
-# --- 7. MODULE ARCHITECTURE (ORIGINAL 4 TABS + REAL DATA UPGRADES) ---
+# --- 7. MODULE ARCHITECTURE ---
 
-# >>> MODULE 1: LIVE COCKPIT <<<
+# SILENT BACKGROUND AUTO-REFRESH EVERY 30 SECONDS
+@st.fragment(run_every="30s")
 def module_live_cockpit():
     macro = get_premarket_macro_data()
     
@@ -676,7 +687,7 @@ def module_live_cockpit():
                     max_unwinding_type = "Put"
 
             if max_unwinding_val < -10000: # Threshold for severe panic
-                panic_text = f"🚨 <b>{max_unwinding_strike} {max_unwinding_type} Unwinding:</b> {max_unwinding_val:,.0f} contracts shed today. Writers are retreating."
+                panic_text = f"🚨 <b>{max_unwinding_strike:,.0f} {max_unwinding_type} Unwinding:</b> {max_unwinding_val:,.0f} contracts shed today. Writers are retreating."
             else:
                 panic_text = "✅ <b>Stable OI:</b> No major institutional panic unwinding detected across active strikes today."
 
@@ -695,7 +706,7 @@ def module_live_cockpit():
             st.markdown("""
             <div style="text-align:center; padding: 40px; border: 1px solid var(--border-subtle); border-radius: 8px;">
                 <div style="color:var(--accent-red); font-weight:bold; font-size:1.1rem;">LIVE OPTION DATA UNAVAILABLE</div>
-                <div style="color:var(--text-muted); margin-top:5px;">NSE API is temporarily restricting requests. Retrying automatically.</div>
+                <div style="color:var(--text-muted); margin-top:5px;">NSE API is temporarily restricting requests. The terminal will auto-retry in the background every 30 seconds.</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -750,7 +761,8 @@ def module_live_cockpit():
         """, unsafe_allow_html=True)
 
 
-# >>> MODULE 2: INTRADAY INTERNALS <<<
+# SILENT BACKGROUND AUTO-REFRESH EVERY 30 SECONDS
+@st.fragment(run_every="30s")
 def module_intraday_internals():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>LIVE INTRADAY INTERNALS: BREADTH & SECTOR ROTATION</h2>", unsafe_allow_html=True)
     
@@ -770,7 +782,7 @@ def module_intraday_internals():
         if breadth_data is None or (breadth_data["advances"] == 0 and breadth_data["declines"] == 0):
             st.markdown("""
                 <div style="text-align:center; padding: 30px 0; color:var(--text-secondary);">
-                    <b>Awaiting Live Breadth Data</b><br>Fetching data from backup sources...
+                    <b>Awaiting Live Breadth Data</b><br>Retrying automatically in the background...
                 </div>
             </div>""", unsafe_allow_html=True)
         else:
@@ -923,7 +935,6 @@ def parse_participant_csv_full(file):
     try:
         df = pd.read_csv(file)
         
-        # Robust column finding
         fil_col = next((c for c in df.columns if 'future index long' in c.lower()), None)
         fis_col = next((c for c in df.columns if 'future index short' in c.lower()), None)
         ocl_col = next((c for c in df.columns if 'call long' in c.lower() and 'index' in c.lower()), None)
@@ -974,7 +985,6 @@ def module_data_ingestion_and_intelligence():
             with st.spinner("Processing files and compiling institutional positioning..."):
                 time.sleep(1)
                 
-                # Use robust parsing to get the full matrix
                 matrix_curr = parse_participant_csv_full(oic) if oic else None
                 matrix_prev = parse_participant_csv_full(oip) if oip else None
                 
