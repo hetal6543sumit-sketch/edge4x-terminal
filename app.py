@@ -9,6 +9,12 @@ from datetime import datetime
 import yfinance as yf
 import pyotp
 
+# --- NEW: IMPORT AI ENGINE MODULE ---
+try:
+    from edge4x_intel_engine import render_ai_intelligence_tab
+except ImportError:
+    render_ai_intelligence_tab = None
+
 # --- ANGEL ONE SECURE API WRAPPER ---
 try:
     from SmartApi import SmartConnect
@@ -240,18 +246,18 @@ def fetch_nse_json(api_url):
             session = requests.Session()
             session.headers.update(headers)
             
-            # Step 1: Hit homepage to warm up cookies
+            # Hit homepage to warm up cookies
             session.get("https://www.nseindia.com", timeout=5)
-            time.sleep(1.0) # Simulate human load time
+            time.sleep(1.0) 
             
-            # Step 2: Set Referer and request the actual API
+            # Set Referer and request the actual API
             session.headers.update({"Referer": "https://www.nseindia.com/"})
             res = session.get(api_url, timeout=5)
             
             if res.status_code == 200:
                 return res.json()
                 
-            # Step 3: If blocked, try secondary Option Chain route to get deeper cookies
+            # If blocked, try secondary Option Chain route
             if res.status_code in [401, 403]:
                 session.get("https://www.nseindia.com/option-chain", timeout=5)
                 time.sleep(1.0)
@@ -505,7 +511,6 @@ def get_premarket_macro_data():
             macro_data[name] = {"price": 0.0, "change": 0.0}
     return macro_data
 
-# FASTER AUTO-REFRESH (15 Seconds)
 @st.fragment(run_every="15s")
 def render_live_ticker():
     data = get_live_ticker_feed()
@@ -531,9 +536,10 @@ def style_plotly_fig(fig):
 
 
 # --- 6. NAVIGATION STRUCTURE ---
+tabs = ["LIVE COCKPIT", "INTRADAY INTERNALS", "🧠 AI INTELLIGENCE", "DATA INGESTION & INTELLIGENCE", "RISK CALCULATOR"]
 selected_tab = st.radio(
     "",
-    ["LIVE COCKPIT", "INTRADAY INTERNALS", "DATA INGESTION & INTELLIGENCE", "RISK CALCULATOR"],
+    tabs,
     horizontal=True,
     label_visibility="collapsed"
 )
@@ -541,7 +547,6 @@ selected_tab = st.radio(
 
 # --- 7. MODULE ARCHITECTURE ---
 
-# SILENT BACKGROUND AUTO-REFRESH EVERY 30 SECONDS
 @st.fragment(run_every="30s")
 def module_live_cockpit():
     macro = get_premarket_macro_data()
@@ -560,7 +565,7 @@ def module_live_cockpit():
     else:
         risk_text, risk_theme_color = "MODERATE / NEUTRAL BIAS", "#D4AF37"
 
-    # --- TOP ROW: REAL MACRO RADAR RESTORED ---
+    # --- TOP ROW: MACRO RADAR ---
     st.markdown("<div class='section-header fade-in'>PRE-MARKET MACRO RADAR (Global Institutional Flows)</div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1.3, 1.1, 1.3])
     
@@ -677,7 +682,6 @@ def module_live_cockpit():
             atm = opt_data["atm_strike"]
             df_plot = df_strikes[(df_strikes['Strike'] >= atm - 300) & (df_strikes['Strike'] <= atm + 300)]
             
-            # REAL PANIC ALERT CALCULATION (No Dummy Data)
             max_unwinding_val = 0
             max_unwinding_strike = None
             max_unwinding_type = ""
@@ -692,7 +696,7 @@ def module_live_cockpit():
                     max_unwinding_strike = r["Strike"]
                     max_unwinding_type = "Put"
 
-            if max_unwinding_val < -10000: # Threshold for severe panic
+            if max_unwinding_val < -10000:
                 panic_text = f"🚨 <b>{max_unwinding_strike:,.0f} {max_unwinding_type} Unwinding:</b> {max_unwinding_val:,.0f} contracts shed today. Writers are retreating."
             else:
                 panic_text = "✅ <b>Stable OI:</b> No major institutional panic unwinding detected across active strikes today."
@@ -712,7 +716,7 @@ def module_live_cockpit():
             st.markdown("""
             <div style="text-align:center; padding: 40px; border: 1px solid var(--border-subtle); border-radius: 8px;">
                 <div style="color:var(--accent-red); font-weight:bold; font-size:1.1rem;">LIVE OPTION DATA UNAVAILABLE</div>
-                <div style="color:var(--text-muted); margin-top:5px;">NSE API is temporarily restricting requests. The terminal will auto-retry in the background every 30 seconds.</div>
+                <div style="color:var(--text-muted); margin-top:5px;">NSE API is temporarily restricting requests. The terminal will auto-retry in the background.</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -746,7 +750,7 @@ def module_live_cockpit():
         </div>
         """, unsafe_allow_html=True)
 
-    # --- REAL PARTICIPANT MATRIX (Derived from EOD CSV) ---
+    # --- REAL PARTICIPANT MATRIX ---
     st.markdown("<div class='panel-header fade-in' style='margin-top: 15px;'>EOD PARTICIPANT INVENTORY MATRIX (T-1)</div>", unsafe_allow_html=True)
     
     if st.session_state.participant_matrix is not None:
@@ -767,7 +771,6 @@ def module_live_cockpit():
         """, unsafe_allow_html=True)
 
 
-# SILENT BACKGROUND AUTO-REFRESH EVERY 30 SECONDS
 @st.fragment(run_every="30s")
 def module_intraday_internals():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>LIVE INTRADAY INTERNALS: BREADTH & SECTOR ROTATION</h2>", unsafe_allow_html=True)
@@ -935,19 +938,15 @@ def module_intraday_internals():
         """, unsafe_allow_html=True)
 
 
-# >>> MODULE 3: DATA INGESTION & INTELLIGENCE <<<
 def parse_participant_csv_full(file):
-    """Advanced parser to extract real Participant OI Data from NSE format"""
     try:
         df = pd.read_csv(file)
-        
         fil_col = next((c for c in df.columns if 'future index long' in c.lower()), None)
         fis_col = next((c for c in df.columns if 'future index short' in c.lower()), None)
         ocl_col = next((c for c in df.columns if 'call long' in c.lower() and 'index' in c.lower()), None)
         ocs_col = next((c for c in df.columns if 'call short' in c.lower() and 'index' in c.lower()), None)
         opl_col = next((c for c in df.columns if 'put long' in c.lower() and 'index' in c.lower()), None)
         ops_col = next((c for c in df.columns if 'put short' in c.lower() and 'index' in c.lower()), None)
-        
         client_col = df.columns[0]
         
         matrix = {}
@@ -959,8 +958,7 @@ def parse_participant_csv_full(file):
                 net_pe = float(row.iloc[0][opl_col]) - float(row.iloc[0][ops_col]) if opl_col and ops_col else 0
                 matrix[client_type] = {"Futures": net_fut, "Calls": net_ce, "Puts": net_pe}
         return matrix
-    except Exception:
-        return None
+    except Exception: return None
 
 def module_data_ingestion_and_intelligence():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>EOD DATA INGESTION & PARSING ENGINE</h2>", unsafe_allow_html=True)
@@ -997,7 +995,6 @@ def module_data_ingestion_and_intelligence():
                 if matrix_curr is not None and "FII" in matrix_curr:
                     st.session_state.participant_matrix = matrix_curr
                     st.session_state.fii_net_futures = matrix_curr["FII"]["Futures"]
-                    
                     if matrix_prev is not None and "FII" in matrix_prev:
                         st.session_state.fii_dod_delta = matrix_curr["FII"]["Futures"] - matrix_prev["FII"]["Futures"]
                 else:
@@ -1028,7 +1025,6 @@ def module_data_ingestion_and_intelligence():
     """, unsafe_allow_html=True)
 
 
-# >>> MODULE 4: RISK & POSITION SIZING CALCULATOR <<<
 def module_risk_calculator():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 15px;'>PRECISION RISK & POSITION SIZING CALCULATOR</h2>", unsafe_allow_html=True)
     col1, col2 = st.columns([1, 1.2])
@@ -1072,6 +1068,11 @@ if selected_tab == "LIVE COCKPIT":
     module_live_cockpit()
 elif selected_tab == "INTRADAY INTERNALS":
     module_intraday_internals()
+elif selected_tab == "🧠 AI INTELLIGENCE":
+    if render_ai_intelligence_tab:
+        render_ai_intelligence_tab()
+    else:
+        st.error("AI Engine module (`edge4x_intel_engine.py`) not found or missing dependencies (DuckDB, LightGBM). Please check installation.")
 elif selected_tab == "DATA INGESTION & INTELLIGENCE":
     module_data_ingestion_and_intelligence()
 elif selected_tab == "RISK CALCULATOR":
