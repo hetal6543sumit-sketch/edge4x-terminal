@@ -33,6 +33,8 @@ if 'smart_money_score' not in st.session_state:
     st.session_state.smart_money_score = 0.0
 if 'market_regime' not in st.session_state:
     st.session_state.market_regime = "AWAITING EOD DATA"
+if 'participant_matrix' not in st.session_state:
+    st.session_state.participant_matrix = None
 
 # --- 3. LIVE BROKER API AUTHENTICATION ---
 @st.cache_resource(ttl=3600)
@@ -171,7 +173,7 @@ st.markdown(f"""
     .setup-row:last-child {{ border-bottom: none; }}
     .setup-label {{ color: var(--text-secondary); }}
     .setup-val {{ font-weight: 700; color: var(--text-primary); }}
-    
+
     .composite-box {{
         background: rgba(255, 92, 92, 0.05); border: 1px solid var(--accent-red); 
         border-radius: 8px; padding: 15px; text-align: center; height: 100%;
@@ -180,7 +182,7 @@ st.markdown(f"""
     .composite-box.bullish {{
         background: rgba(57, 211, 83, 0.05); border: 1px solid var(--accent-green);
     }}
-
+    
     /* TOOLTIP ENGINE */
     .tooltip {{
         position: relative; display: inline-block; cursor: help;
@@ -226,28 +228,24 @@ def fetch_nse_json(api_url):
         try:
             session = requests.Session()
             session.headers.update(headers)
-            
-            # Step 1: Hit homepage to warm up cookies
             session.get("https://www.nseindia.com", timeout=5)
-            time.sleep(1.5) # Critical delay to simulate human load time
+            time.sleep(1.0)
             
-            # Step 2: Set Referer and request the actual API
             session.headers.update({"Referer": "https://www.nseindia.com/"})
             res = session.get(api_url, timeout=5)
             
             if res.status_code == 200:
                 return res.json()
                 
-            # Step 3: If blocked, try secondary Option Chain route to get deeper cookies
             if res.status_code in [401, 403]:
                 session.get("https://www.nseindia.com/option-chain", timeout=5)
-                time.sleep(1)
+                time.sleep(1.0)
                 res = session.get(api_url, timeout=5)
                 if res.status_code == 200:
                     return res.json()
         except:
             pass
-        time.sleep(2)
+        time.sleep(1.5)
     return None
 
 def get_yfinance_breadth_fallback():
@@ -277,7 +275,6 @@ def get_yfinance_breadth_fallback():
     except:
         pass
     return None
-
 
 def get_live_ticker_feed():
     results = {}
@@ -312,6 +309,29 @@ def get_live_ticker_feed():
         except Exception:
             if name not in results: results[name] = {"price": 0.0, "pct_change": 0.0}
     return results
+
+@st.cache_data(ttl=300)
+def get_premarket_macro_data():
+    symbols = {
+        "DXY": "DX-Y.NYB", "US10Y": "^TNX", "BRENT": "BZ=F",
+        "HDFC_ADR": "HDB", "ICICI_ADR": "IBN", "INFY_ADR": "INFY",
+        "WIPRO_ADR": "WIT", "DRREDDY_ADR": "RDY"
+    }
+    macro_data = {}
+    for name, sym in symbols.items():
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="5d")
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                curr = hist['Close'].iloc[-1]
+                pct = ((curr - prev_close) / prev_close) * 100
+                macro_data[name] = {"price": curr, "change": pct}
+            else:
+                macro_data[name] = {"price": 0.0, "change": 0.0}
+        except:
+            macro_data[name] = {"price": 0.0, "change": 0.0}
+    return macro_data
 
 def norm_pdf(x):
     return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
@@ -350,6 +370,8 @@ def get_real_option_chain_data():
             
             ce_oi = ce.get('openInterest', 0) * 25
             pe_oi = pe.get('openInterest', 0) * 25
+            ce_chgoi = ce.get('changeinOpenInterest', 0) * 25
+            pe_chgoi = pe.get('changeinOpenInterest', 0) * 25
             ce_iv = ce.get('impliedVolatility', 0.0)
             pe_iv = pe.get('impliedVolatility', 0.0)
             
@@ -371,7 +393,10 @@ def get_real_option_chain_data():
                 gamma = 0.0
                 
             net_gex = (ce_oi * gamma * spot_price * 0.01) - (pe_oi * gamma * spot_price * 0.01)
-            parsed_strikes.append({"Strike": strike, "CE_OI": ce_oi, "PE_OI": pe_oi, "GEX": net_gex})
+            parsed_strikes.append({
+                "Strike": strike, "CE_OI": ce_oi, "PE_OI": pe_oi, 
+                "CE_chgOI": ce_chgoi, "PE_chgOI": pe_chgoi, "GEX": net_gex
+            })
             
         return {
             "spot": spot_price, "atm_strike": atm_strike, "atm_data": atm_data,
@@ -382,7 +407,6 @@ def get_real_option_chain_data():
 
 @st.cache_data(ttl=60)
 def get_real_market_breadth():
-    # Attempt 1: Scrape NSE
     url = "https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050"
     data = fetch_nse_json(url)
     
@@ -394,8 +418,6 @@ def get_real_market_breadth():
                 "declines": adv.get('declines', 0),
                 "unchanged": adv.get('unchanged', 0)
             }
-            
-    # Attempt 2: YFinance 50-stock Fail-Safe
     return get_yfinance_breadth_fallback()
 
 @st.cache_data(ttl=60)
@@ -501,10 +523,114 @@ selected_tab = st.radio(
 )
 
 
-# --- 7. MODULE ARCHITECTURE (ORIGINAL 4 TABS) ---
+# --- 7. MODULE ARCHITECTURE (ORIGINAL 4 TABS + REAL DATA UPGRADES) ---
 
 # >>> MODULE 1: LIVE COCKPIT <<<
 def module_live_cockpit():
+    macro = get_premarket_macro_data()
+    
+    dxy_chg = macro.get("DXY", {}).get("change", 0)
+    yield_chg = macro.get("US10Y", {}).get("change", 0)
+    brent_chg = macro.get("BRENT", {}).get("change", 0)
+    
+    risk_score = 50 + (dxy_chg * 20) + (yield_chg * 15) + (brent_chg * 10)
+    risk_score = max(5.0, min(95.0, risk_score))
+    
+    if risk_score > 60:
+        risk_text, risk_theme_color = "HIGH RISK (GLOBAL CAPITAL DRAIN)", "#FF5C5C"
+    elif risk_score < 40:
+        risk_text, risk_theme_color = "LOW RISK (FAVORABLE INFLOWS)", "#39D353"
+    else:
+        risk_text, risk_theme_color = "MODERATE / NEUTRAL BIAS", "#D4AF37"
+
+    # --- TOP ROW: REAL MACRO RADAR RESTORED ---
+    st.markdown("<div class='section-header fade-in'>PRE-MARKET MACRO RADAR (Global Institutional Flows)</div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1.3, 1.1, 1.3])
+    
+    with c1:
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                GLOBAL RISK SPEEDOMETER
+                <span class="tooltip">ⓘ<span class="tooltiptext">Synthesizes the US Dollar (DXY), US 10Y Bond Yields, and Brent Crude Oil into a single 0-100 institutional risk metric.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        gauge_fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=risk_score, domain={'x': [0, 1], 'y': [0, 1]},
+            number={'suffix': "/100", 'font': {'size': 22, 'color': risk_theme_color, 'family': 'Inter'}},
+            gauge={'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#A7AFBA"},
+                   'bar': {'color': risk_theme_color, 'thickness': 0.28},
+                   'bgcolor': "rgba(0,0,0,0)", 'borderwidth': 0,
+                   'steps': [{'range': [0, 40], 'color': "rgba(57, 211, 83, 0.15)"},
+                             {'range': [40, 60], 'color': "rgba(212, 175, 55, 0.15)"},
+                             {'range': [60, 100], 'color': "rgba(255, 92, 92, 0.15)"}],
+                   'threshold': {'line': {'color': risk_theme_color, 'width': 3}, 'thickness': 0.75, 'value': risk_score}}
+        ))
+        gauge_fig.update_layout(height=140, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#A7AFBA", family="Inter"))
+        st.plotly_chart(gauge_fig, use_container_width=True, config={'displayModeBar': False})
+        
+        st.markdown(f"""
+            <div style="font-size: 0.95rem; font-weight: 700; color: {risk_theme_color}; margin-top: -5px; text-align: center;">{risk_text}</div>
+            <div style="margin-top: 15px; border-top: 1px solid var(--border-subtle); padding-top: 10px;">
+                <div class="setup-row"><span class="setup-label">Brent Crude Oil</span><span class="setup-val">${macro.get('BRENT', {}).get('price', 0):.2f}</span></div>
+                <div class="setup-row"><span class="setup-label">US 10-Year Yield</span><span class="setup-val">{macro.get('US10Y', {}).get('price', 0):.2f}%</span></div>
+                <div class="setup-row"><span class="setup-label">US Dollar (DXY)</span><span class="setup-val">{macro.get('DXY', {}).get('price', 0):.2f}</span></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                MORNING GAP & TRAP ANALYZER
+                <span class="tooltip">ⓘ<span class="tooltiptext">Cross-references your manual GIFT Nifty gap input against overnight institutional futures inventory.</span></span>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        gift_nifty_gap = st.number_input("Input Live GIFT Nifty Gap (Pts)", value=0, step=10, help="Check TradingView or your broker for the live GIFT Nifty pre-market change.")
+        
+        if gift_nifty_gap == 0:
+            gap_color, gap_alert, gap_desc = "var(--text-secondary)", "AWAITING MORNING INPUT", "Input the morning gap above to calculate trap probability."
+        elif st.session_state.smart_money_score < 0 and gift_nifty_gap > 20:
+            gap_color, gap_alert, gap_desc = "var(--accent-red)", "TRAP WARNING (FADE RALLY)", "Market indicating gap UP, but FIIs hold heavy net short futures. High probability of morning exhaustion."
+        elif st.session_state.smart_money_score > 0 and gift_nifty_gap < -20:
+            gap_color, gap_alert, gap_desc = "var(--accent-green)", "TRAP WARNING (BUY THE DIP)", "Market indicating gap DOWN, but FIIs are heavily long. Retail panic selling will be absorbed."
+        else:
+            gap_color, gap_alert, gap_desc = "var(--gold-primary)", "POSITIONING ALIGNED", "Morning gap direction aligns with underlying institutional positioning. Standard trend rules apply."
+
+        st.markdown(f"""
+            <div style="font-size: 1.25rem; font-weight: 800; color: {gap_color}; margin-top: 10px; margin-bottom: 8px;">{gap_alert}</div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 15px;">{gap_desc}</div>
+            <div class="setup-row"><span class="setup-label">FII Inventory Bias</span><span class="setup-val" style="color:var(--gold-primary);">{st.session_state.fii_net_futures:,.0f} Contracts</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c3:
+        def format_adr(val):
+            if val == 0.0: return "<span style='color:var(--text-muted);'>Awaiting Sync</span>"
+            return f"<span style='color:var(--accent-green); font-weight:700;'>+{val:.2f}%</span>" if val > 0 else f"<span style='color:var(--accent-red); font-weight:700;'>{val:.2f}%</span>"
+            
+        st.markdown(f"""
+        <div class="panel-box fade-in" style="height: 100%;">
+            <div class="panel-header">
+                OVERNIGHT US ADR TRACKER 
+                <span class="tooltip">ⓘ<span class="tooltiptext">Tracks Indian blue-chips traded on the NYSE/NASDAQ during US market hours to forecast sector opening gaps.</span></span>
+            </div>
+            <table class="data-table">
+                <tr><th>Constituent</th><th>US Ticker</th><th>Overnight Change</th></tr>
+                <tr><td><b>HDFC Bank</b></td><td>HDB</td><td>{format_adr(macro.get("HDFC_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>ICICI Bank</b></td><td>IBN</td><td>{format_adr(macro.get("ICICI_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Infosys</b></td><td>INFY</td><td>{format_adr(macro.get("INFY_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Wipro</b></td><td>WIT</td><td>{format_adr(macro.get("WIPRO_ADR", {}).get("change", 0))}</td></tr>
+                <tr><td><b>Dr. Reddy's</b></td><td>RDY</td><td>{format_adr(macro.get("DRREDDY_ADR", {}).get("change", 0))}</td></tr>
+            </table>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # --- MIDDLE ROW: METRICS ---
+    st.markdown("<div class='section-header fade-in' style='margin-top: 40px;'>LIVE INTRADAY DERIVATIVES SUITE</div>", unsafe_allow_html=True)
     live_data = get_live_ticker_feed()
     live_nifty = live_data.get('NIFTY 50', {}).get('price', 0.0)
 
@@ -521,30 +647,39 @@ def module_live_cockpit():
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2 = st.columns([1.6, 1])
+    # --- BOTTOM ROW: LIVE CHARTS AND REAL ALERTS ---
+    col4, col5 = st.columns([1.6, 1])
     opt_data = get_real_option_chain_data()
 
-    with col1:
-        outlook_text = "SELL ON RISING BOUNCES" if st.session_state.fii_net_futures < 0 else "BUY ON DIPS"
-        outlook_color = "var(--accent-red)" if st.session_state.fii_net_futures < 0 else "var(--accent-green)"
-        
-        st.markdown(f"""
-        <div class="panel-box fade-in">
-            <div class="panel-header">DAILY MARKET OUTLOOK & ACTIONABLE PLAN</div>
-            <div style="font-size: 1.35rem; font-weight: 700; color: {outlook_color}; margin-bottom: 8px;">{outlook_text}</div>
-            <div style="color: var(--text-secondary); line-height: 1.5; font-size: 0.92rem;">
-                FIIs hold <b>{st.session_state.fii_net_futures:,.0f}</b> net short futures contracts. Trade in alignment with the institutional flow bias.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
+    with col4:
         st.markdown("<div class='panel-header fade-in'>STRIKE-BY-STRIKE OPTION WALL (LIVE OPEN INTEREST)</div>", unsafe_allow_html=True)
-
+        panic_text = "Awaiting Live Data"
+        
         if opt_data is not None:
             df_strikes = opt_data["strikes"]
             atm = opt_data["atm_strike"]
             df_plot = df_strikes[(df_strikes['Strike'] >= atm - 300) & (df_strikes['Strike'] <= atm + 300)]
             
+            # REAL PANIC ALERT CALCULATION (No Dummy Data)
+            max_unwinding_val = 0
+            max_unwinding_strike = None
+            max_unwinding_type = ""
+
+            for _, r in df_strikes.iterrows():
+                if r["CE_chgOI"] < max_unwinding_val:
+                    max_unwinding_val = r["CE_chgOI"]
+                    max_unwinding_strike = r["Strike"]
+                    max_unwinding_type = "Call"
+                if r["PE_chgOI"] < max_unwinding_val:
+                    max_unwinding_val = r["PE_chgOI"]
+                    max_unwinding_strike = r["Strike"]
+                    max_unwinding_type = "Put"
+
+            if max_unwinding_val < -10000: # Threshold for severe panic
+                panic_text = f"🚨 <b>{max_unwinding_strike} {max_unwinding_type} Unwinding:</b> {max_unwinding_val:,.0f} contracts shed today. Writers are retreating."
+            else:
+                panic_text = "✅ <b>Stable OI:</b> No major institutional panic unwinding detected across active strikes today."
+
             fig = go.Figure()
             fig.add_trace(go.Bar(y=df_plot['Strike'], x=-df_plot['PE_OI'], orientation='h', name='Put OI (Support Floor)', marker_color='#39D353'))
             fig.add_trace(go.Bar(y=df_plot['Strike'], x=df_plot['CE_OI'], orientation='h', name='Call OI (Resistance Ceiling)', marker_color='#FF5C5C'))
@@ -564,7 +699,7 @@ def module_live_cockpit():
             </div>
             """, unsafe_allow_html=True)
 
-    with col2:
+    with col5:
         if opt_data is not None:
             call_wall = str(df_strikes.loc[df_strikes['CE_OI'].idxmax()]['Strike'])
             put_wall = str(df_strikes.loc[df_strikes['PE_OI'].idxmax()]['Strike'])
@@ -572,6 +707,7 @@ def module_live_cockpit():
         else:
             call_wall, put_wall, max_pain = "AWAITING DATA", "AWAITING DATA", "AWAITING DATA"
             
+        outlook_color = "var(--accent-red)" if st.session_state.fii_net_futures < 0 else "var(--accent-green)"
         primary_bias = "Fade Opening Spikes" if st.session_state.fii_net_futures < 0 else "Buy Market Dips"
 
         st.markdown(f"""
@@ -584,12 +720,32 @@ def module_live_cockpit():
         </div>
         """, unsafe_allow_html=True)
         
-        st.markdown("""
+        st.markdown(f"""
         <div class="panel-box fade-in">
-            <div class="panel-header">HOW TO USE THIS DATA</div>
+            <div class="panel-header">OPTIONS WRITER PANIC ALERT (REAL-TIME)</div>
             <div style="font-size:0.88rem; color:var(--text-secondary); line-height: 1.5;">
-                ⚡ <b>Edge Strategy:</b> If the daily market outlook is 'Sell on Bounces', wait for the live price to approach the Call Wall (Resistance) and execute short positions. Do not trade against the underlying institutional net futures data.
+                {panic_text}
             </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # --- REAL PARTICIPANT MATRIX (Derived from EOD CSV) ---
+    st.markdown("<div class='panel-header fade-in' style='margin-top: 15px;'>EOD PARTICIPANT INVENTORY MATRIX (T-1)</div>", unsafe_allow_html=True)
+    
+    if st.session_state.participant_matrix is not None:
+        matrix_html = '<table class="data-table fade-in"><tr><th>Participant Category</th><th>Net Index Futures</th><th>Net Call Options</th><th>Net Put Options</th></tr>'
+        for client_type, data in st.session_state.participant_matrix.items():
+            def format_val(v):
+                c = "color: var(--accent-green);" if v > 0 else "color: var(--accent-red);" if v < 0 else ""
+                sign = "+" if v > 0 else ""
+                return f'<td style="{c}">{sign}{v:,.0f}</td>'
+            matrix_html += f"<tr><td><b>{client_type}</b></td>{format_val(data['Futures'])}{format_val(data['Calls'])}{format_val(data['Puts'])}</tr>"
+        matrix_html += "</table>"
+        st.markdown(matrix_html, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style="text-align:center; padding: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-secondary);">
+            <b>AWAITING EOD DATA UPLOAD</b><br>Please upload the daily Participant OI CSV in the 'Data Ingestion & Intelligence' tab to view the real institutional matrix.
         </div>
         """, unsafe_allow_html=True)
 
@@ -614,7 +770,7 @@ def module_intraday_internals():
         if breadth_data is None or (breadth_data["advances"] == 0 and breadth_data["declines"] == 0):
             st.markdown("""
                 <div style="text-align:center; padding: 30px 0; color:var(--text-secondary);">
-                    <b>Awaiting Live Breadth Data</b><br>NSE API is restricting access. Retrying in background.
+                    <b>Awaiting Live Breadth Data</b><br>Fetching data from backup sources...
                 </div>
             </div>""", unsafe_allow_html=True)
         else:
@@ -762,15 +918,32 @@ def module_intraday_internals():
 
 
 # >>> MODULE 3: DATA INGESTION & INTELLIGENCE <<<
-def parse_participant_csv(file):
+def parse_participant_csv_full(file):
+    """Advanced parser to extract real Participant OI Data from NSE format"""
     try:
         df = pd.read_csv(file)
-        fii_row = df[df.iloc[:, 0].astype(str).str.contains('FII', case=False, na=False)]
-        if not fii_row.empty:
-            return float(fii_row.iloc[0, 1]) - float(fii_row.iloc[0, 2])
+        
+        # Robust column finding
+        fil_col = next((c for c in df.columns if 'future index long' in c.lower()), None)
+        fis_col = next((c for c in df.columns if 'future index short' in c.lower()), None)
+        ocl_col = next((c for c in df.columns if 'call long' in c.lower() and 'index' in c.lower()), None)
+        ocs_col = next((c for c in df.columns if 'call short' in c.lower() and 'index' in c.lower()), None)
+        opl_col = next((c for c in df.columns if 'put long' in c.lower() and 'index' in c.lower()), None)
+        ops_col = next((c for c in df.columns if 'put short' in c.lower() and 'index' in c.lower()), None)
+        
+        client_col = df.columns[0]
+        
+        matrix = {}
+        for client_type in ['Client', 'FII', 'Pro']:
+            row = df[df[client_col].astype(str).str.contains(client_type, case=False, na=False)]
+            if not row.empty and fil_col and fis_col:
+                net_fut = float(row.iloc[0][fil_col]) - float(row.iloc[0][fis_col])
+                net_ce = float(row.iloc[0][ocl_col]) - float(row.iloc[0][ocs_col]) if ocl_col and ocs_col else 0
+                net_pe = float(row.iloc[0][opl_col]) - float(row.iloc[0][ops_col]) if opl_col and ops_col else 0
+                matrix[client_type] = {"Futures": net_fut, "Calls": net_ce, "Puts": net_pe}
+        return matrix
     except Exception:
-        pass
-    return None
+        return None
 
 def module_data_ingestion_and_intelligence():
     st.markdown("<h2 class='fade-in' style='font-weight: 700; margin-bottom: 20px;'>EOD DATA INGESTION & PARSING ENGINE</h2>", unsafe_allow_html=True)
@@ -800,15 +973,19 @@ def module_data_ingestion_and_intelligence():
         if st.button("EXECUTE QUANTITATIVE PARSING & SYNCHRONIZE", type="primary", use_container_width=True):
             with st.spinner("Processing files and compiling institutional positioning..."):
                 time.sleep(1)
-                net_prev = parse_participant_csv(oip) if oip else None
-                net_curr = parse_participant_csv(oic) if oic else None
                 
-                if net_curr is not None:
-                    st.session_state.fii_net_futures = int(net_curr)
-                    if net_prev is not None:
-                        st.session_state.fii_dod_delta = int(net_curr - net_prev)
+                # Use robust parsing to get the full matrix
+                matrix_curr = parse_participant_csv_full(oic) if oic else None
+                matrix_prev = parse_participant_csv_full(oip) if oip else None
+                
+                if matrix_curr is not None and "FII" in matrix_curr:
+                    st.session_state.participant_matrix = matrix_curr
+                    st.session_state.fii_net_futures = matrix_curr["FII"]["Futures"]
+                    
+                    if matrix_prev is not None and "FII" in matrix_prev:
+                        st.session_state.fii_dod_delta = matrix_curr["FII"]["Futures"] - matrix_prev["FII"]["Futures"]
                 else:
-                    st.error("Invalid CSV format. Cannot sync FII data.")
+                    st.error("Invalid CSV format. Please upload standard NSE Participant OI files.")
 
                 if st.session_state.fii_net_futures < -100000:
                     st.session_state.smart_money_score = -6.5
